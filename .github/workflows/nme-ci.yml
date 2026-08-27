@@ -1,0 +1,171 @@
+name: NME CI Preflight
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: nme_frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: nme_backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest==9.1.1 pytest-playwright==0.9.0 playwright==1.62.0
+
+      - name: Install frontend dependencies
+        working-directory: nme_frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: nme_backend
+        run: python -m playwright install --with-deps chromium
+
+      - name: Capture repo DB counts before
+        id: db_before
+        working-directory: nme_backend
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          db_path = Path('nme.db')
+          if not db_path.exists():
+              raise SystemExit('nme_backend/nme.db is missing')
+
+          conn = sqlite3.connect(db_path)
+          cur = conn.cursor()
+          data = {}
+          for table in ['users', 'products', 'deals', 'orders', 'auth_sessions']:
+              cur.execute(f'SELECT COUNT(*) FROM {table}')
+              data[table] = cur.fetchone()[0]
+          conn.close()
+          print(f"counts={json.dumps(data, separators=(',', ':'))}")
+          PY
+
+      - name: API smoke and CORS
+        working-directory: nme_backend
+        run: |
+          export DATABASE_URL="sqlite:///./nme_ci_smoke.db"
+          export DEV_CORS_ALLOW_ORIGINS="http://127.0.0.1:5173"
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 18000 --no-proxy-headers > "$RUNNER_TEMP/nme-api.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID"' EXIT
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          base = 'http://127.0.0.1:18000'
+          urls = ['/health', '/market', '/docs', '/openapi.json']
+          deadline = time.time() + 60
+          last_error = None
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(f'{base}/health', timeout=3) as response:
+                      if response.status == 200:
+                          break
+              except Exception as exc:
+                  last_error = str(exc)
+              time.sleep(0.5)
+          else:
+              raise RuntimeError(f'backend smoke server did not start: {last_error}')
+
+          for path in urls:
+              request = urllib.request.Request(f'{base}{path}', headers={'Accept': 'text/html,application/xhtml+xml'})
+              with urllib.request.urlopen(request, timeout=5) as response:
+                  if response.status != 200:
+                      raise RuntimeError(f'{path} returned {response.status}')
+
+          allowed = urllib.request.Request(f'{base}/market', headers={'Origin': 'http://127.0.0.1:5173'})
+          with urllib.request.urlopen(allowed, timeout=5) as response:
+              if response.headers.get('Access-Control-Allow-Origin') != 'http://127.0.0.1:5173':
+                  raise RuntimeError('allowed origin header mismatch')
+
+          denied = urllib.request.Request(f'{base}/market', headers={'Origin': 'http://evil.example.com'})
+          with urllib.request.urlopen(denied, timeout=5) as response:
+              if response.headers.get('Access-Control-Allow-Origin'):
+                  raise RuntimeError('evil origin should not be allowed')
+
+          print(json.dumps({'api_smoke': 'pass', 'cors': 'pass'}))
+          PY
+
+      - name: Run full pytest
+        working-directory: nme_backend
+        run: python -m pytest -q
+
+      - name: Run browser pytest
+        working-directory: nme_backend
+        run: python -m pytest -q tests/browser -m browser
+
+      - name: Run frontend build
+        working-directory: nme_frontend
+        run: npm run build
+
+      - name: Compare repo DB counts after
+        working-directory: nme_backend
+        env:
+          BEFORE_COUNTS: ${{ steps.db_before.outputs.counts }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          db_path = Path('nme.db')
+          before = json.loads(os.environ['BEFORE_COUNTS'])
+
+          conn = sqlite3.connect(db_path)
+          cur = conn.cursor()
+          after = {}
+          for table in ['users', 'products', 'deals', 'orders', 'auth_sessions']:
+              cur.execute(f'SELECT COUNT(*) FROM {table}')
+              after[table] = cur.fetchone()[0]
+          conn.close()
+
+          if before != after:
+              raise RuntimeError(f'repo nme.db changed: before={before}, after={after}')
+
+          print(json.dumps({'db_protected': True, 'counts': after}))
+          PY
+
+      - name: NME QUALITY GATE PASS
+        if: ${{ success() }}
+        run: echo "NME QUALITY GATE: PASS"
+
+      - name: NME QUALITY GATE FAIL
+        if: ${{ failure() }}
+        run: |
+          echo "[FAIL]"
+          echo "Item: CI Quality Gate"
+          echo "Cause: one or more verification steps failed"
+          echo "Related file: .github/workflows/nme-ci.yml"
+          echo "Recommended action: inspect the failed step above and fix the regression"
+          echo "NME QUALITY GATE: FAIL"

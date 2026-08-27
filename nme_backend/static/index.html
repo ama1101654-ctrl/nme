@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>NME Minimal Frontend</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:20px;color:#0b3b66}
+    .card{border:1px solid #e1e8ee;padding:12px;margin:8px 0;border-radius:6px}
+    button{background:#0b69ff;color:white;border:0;padding:6px 10px;border-radius:4px;cursor:pointer}
+    button.secondary{background:#666}
+    .muted{color:#666}
+    .error{color:#b00}
+    label{display:block;margin-top:6px}
+    input{padding:6px;margin-top:4px;width:100%}
+    .flex{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <h1>NME — Mini Frontend (STEP 12)</h1>
+
+  <div class="card">
+    <strong>Backend 연결</strong>
+    <div class="flex" style="margin-top:8px">
+      <button id="btnHealth">Check /health</button>
+      <div id="healthStatus" class="muted">---</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>Market</strong>
+    <div style="margin-top:8px">
+      <button id="btnLoadMarket">Load Market</button>
+      <div id="marketList" style="margin-top:8px">(빈 목록)</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>Active Flow</strong>
+    <div id="flowArea" style="margin-top:8px">
+      <div id="flowMsg" class="muted">상품을 선택하고 거래 제안을 생성하세요.</div>
+      <div id="selectedProduct"></div>
+      <div id="dealForm" style="display:none;margin-top:8px">
+        <label>Buyer ID <input id="buyerId" value="2"/></label>
+        <label>Quantity <input id="dealQty" value="1"/></label>
+        <label>Proposed Price <input id="dealPrice" value="1000"/></label>
+        <div style="margin-top:8px"><button id="createDeal">Deal 생성</button></div>
+        <div id="dealResult" style="margin-top:8px"></div>
+      </div>
+      <div id="dealActions" style="margin-top:8px"></div>
+      <div id="orderArea" style="margin-top:8px"></div>
+      <div id="completionArea" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.__NME_API_BASE__ || window.location.origin;
+    const el = id => document.getElementById(id);
+
+    async function checkHealth(){
+      try{
+        const r = await fetch(API + '/health');
+        if(!r.ok) throw r;
+        const j = await r.json();
+        el('healthStatus').textContent = 'OK — ' + JSON.stringify(j);
+      }catch(e){
+        el('healthStatus').innerHTML = '<span class="error">연결 실패</span>';
+        console.error(e);
+      }
+    }
+
+    async function loadMarket(){
+      el('marketList').textContent = 'Loading...';
+      try{
+        const r = await fetch(API + '/market');
+        if(!r.ok) throw r;
+        const arr = await r.json();
+        if(!arr.length){ el('marketList').textContent='Market 데이터 없음'; return }
+        const nodes = arr.map(p=>{
+          const div=document.createElement('div');
+          div.className='card';
+          div.innerHTML = `<strong>${p.metal} ${p.grade}</strong><div class="muted">id:${p.product_id} — ${p.quantity} ${p.unit} — ${p.price} (${p.status})</div>`;
+          const btn = document.createElement('button'); btn.textContent='거래 제안'; btn.style.marginTop='8px';
+          btn.onclick = ()=> selectProduct(p);
+          div.appendChild(btn);
+          return div;
+        });
+        const container = el('marketList'); container.innerHTML=''; nodes.forEach(n=>container.appendChild(n));
+      }catch(e){ el('marketList').innerHTML='<span class="error">Market 호출 실패</span>'; console.error(e) }
+    }
+
+    let currentProduct=null; let currentDeal=null; let currentOrder=null;
+
+    function selectProduct(p){
+      currentProduct=p; el('selectedProduct').innerHTML = `<div class="muted">선택: ${p.metal} ${p.grade} (id:${p.product_id})</div>`;
+      el('dealForm').style.display='block';
+      el('dealResult').innerHTML=''; el('dealActions').innerHTML=''; el('orderArea').innerHTML=''; el('completionArea').innerHTML='';
+      el('flowMsg').textContent = '';
+      el('dealQty').value = Math.max(1, Math.round(p.quantity));
+    }
+
+    async function createDeal(){
+      const payload = {product_id: currentProduct.product_id, buyer_id: Number(el('buyerId').value), quantity: Number(el('dealQty').value), proposed_price: Number(el('dealPrice').value)};
+      el('dealResult').textContent = 'Creating...';
+      try{
+        const r = await fetch(API + '/deals', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        const j = await r.json();
+        if(!r.ok){ el('dealResult').innerHTML = `<span class="error">${j.detail || JSON.stringify(j)}</span>`; return }
+        currentDeal = j; el('dealResult').innerHTML = `Deal created: id ${j.id} status ${j.status}`;
+        showDealActions();
+      }catch(e){ el('dealResult').innerHTML='<span class="error">Deal 생성 실패</span>'; console.error(e) }
+    }
+
+    function showDealActions(){
+      const wrapper = el('dealActions'); wrapper.innerHTML='';
+      if(!currentDeal) return;
+      const info = document.createElement('div'); info.className='muted'; info.textContent = `Deal ${currentDeal.id} — status: ${currentDeal.status}`; wrapper.appendChild(info);
+      if(currentDeal.status === 'NEGOTIATING'){
+        const agree = document.createElement('button'); agree.textContent='AGREE'; agree.onclick = ()=> patchDealStatus('AGREED'); wrapper.appendChild(agree);
+      }
+      const refresh = document.createElement('button'); refresh.textContent='Refresh Deal'; refresh.className='secondary'; refresh.style.marginLeft='8px'; refresh.onclick = ()=> fetchDeal(); wrapper.appendChild(refresh);
+    }
+
+    async function patchDealStatus(s){
+      try{
+        const r = await fetch(API + `/deals/${currentDeal.id}/status`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})});
+        const j = await r.json();
+        if(!r.ok){ el('dealResult').innerHTML=`<span class="error">${j.detail||JSON.stringify(j)}</span>`; return }
+        currentDeal = j; showDealActions(); el('dealResult').innerHTML = `Deal updated: ${j.status}`;
+        if(j.status==='AGREED') showCreateOrderButton();
+      }catch(e){ console.error(e) }
+    }
+
+    function showCreateOrderButton(){
+      const area = el('orderArea'); area.innerHTML='';
+      const btn = document.createElement('button'); btn.textContent='주문 생성'; btn.onclick = ()=> createOrderFromDeal(); area.appendChild(btn);
+      const info = document.createElement('div'); info.className='muted'; info.textContent='AGREED 상태입니다. 주문을 생성하세요.'; area.appendChild(info);
+    }
+
+    async function createOrderFromDeal(){
+      try{
+        const r = await fetch(API + `/deals/${currentDeal.id}/create-order`, {method:'POST'});
+        const j = await r.json();
+        if(!r.ok){ el('orderArea').innerHTML = `<span class="error">${j.detail||JSON.stringify(j)}</span>`; return }
+        currentOrder = j; renderOrder();
+      }catch(e){ console.error(e) }
+    }
+
+    function renderOrder(){
+      const a = el('orderArea'); a.innerHTML='';
+      if(!currentOrder) return;
+      const div = document.createElement('div'); div.innerHTML = `<strong>Order ${currentOrder.id}</strong><div class="muted">product:${currentOrder.product_id} buyer:${currentOrder.buyer_id} qty:${currentOrder.quantity} price:${currentOrder.price}</div><div>Status: <span id="orderStatus">${currentOrder.status}</span></div>`;
+      a.appendChild(div);
+      const steps = ['ACCEPTED','PAID','SHIPPED','COMPLETED'];
+      const btns = document.createElement('div'); btns.style.marginTop='8px';
+      steps.forEach(s=>{
+        const b=document.createElement('button'); b.textContent=s; b.onclick=()=> patchOrderStatus(s); btns.appendChild(b);
+      });
+      a.appendChild(btns);
+    }
+
+    async function patchOrderStatus(s){
+      try{
+        const r = await fetch(API + `/orders/${currentOrder.id}/status`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})});
+        const j = await r.json();
+        if(!r.ok){ alert(j.detail||JSON.stringify(j)); return }
+        currentOrder = j; el('orderStatus').textContent = j.status; if(j.status==='COMPLETED') showCompletion();
+      }catch(e){ console.error(e) }
+    }
+
+    async function fetchDeal(){
+      try{
+        const r = await fetch(API + `/deals/${currentDeal.id}`);
+        const j = await r.json(); if(!r.ok){ alert(j.detail||JSON.stringify(j)); return } currentDeal = j; showDealActions();
+      }catch(e){ console.error(e) }
+    }
+
+    async function showCompletion(){
+      try{
+        const r = await fetch(API + `/deals/${currentDeal.id}/completion`);
+        const j = await r.json(); if(!r.ok){ el('completionArea').innerHTML = `<span class="error">${j.detail||JSON.stringify(j)}</span>`; return }
+        el('completionArea').innerHTML = `<div><strong>Deal ${j.deal_id} — Order ${j.order_id}</strong><div class=\"muted\">Status: ${j.status} — completed: ${j.completed}</div></div><div style=\"margin-top:8px;color:green;\">거래가 완료되었습니다.</div>`;
+      }catch(e){ console.error(e) }
+    }
+
+    // Wire UI
+    el('btnHealth').addEventListener('click', checkHealth);
+    el('btnLoadMarket').addEventListener('click', loadMarket);
+    el('createDeal').addEventListener('click', ()=>{ if(!currentProduct){ alert('상품 선택 필요') } else createDeal() });
+
+    // Initial check
+    checkHealth();
+  </script>
+</body>
+</html>
