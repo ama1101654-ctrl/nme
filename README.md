@@ -503,6 +503,72 @@ stop_backend.bat
 - JWT/세션 계약 변경 없음
 - 기존 거래/주문/마켓 API 계약 변경 없음
 
+## NME Current Baseline
+
+### STEP 58: COMPLETE
+
+- Repository: `ama1101654-ctrl/nme`
+- Branch: `main`
+- Stable CI commit: `c113d75` (`fix: provide required CI env for pytest`)
+- GitHub Actions: PASS
+- Quality gate: PASS
+- Pytest: 10 passed
+- Browser E2E: 2 passed
+- Frontend build: PASS
+- API smoke: PASS
+- CORS: PASS
+- DB protection: PASS
+- Real DB counts: users=8, products=4, deals=23, orders=16, auth_sessions=82
+- API contract: UNCHANGED
+- DB schema: UNCHANGED
+- JWT/Auth: UNCHANGED
+- Final GitHub Actions run: `33132691173`
+
+## STEP 58 — GitHub Actions Failure Investigation & Fix
+
+### 1. Initial remote CI status
+- Local quality gate: PASS
+- Remote GitHub Actions: FAILURE on the first public workflow run after repo connection
+- Job: `quality-gate`
+- Failed step: `Run full pytest`
+- Final root cause: missing JWT/CORS CI environment configuration in GitHub Actions
+
+### 2. Actual failure location
+- The failing GitHub Actions annotation showed `RuntimeError: JWT_SECRET_KEY is required` during the login flow in `nme_backend/app/main.py`.
+- The job failed during pytest execution, not during DB count initialization.
+- This is a CI environment setup issue, not an application business-logic regression.
+
+### 3. Root cause
+- GitHub Actions did not set the required `APP_ENV`, `JWT_SECRET_KEY`, `JWT_ALGORITHM`, and CORS environment variables before importing the FastAPI app and running tests.
+- The app enforces JWT secret validation at startup/login, so the CI runner failed when `/auth/login` was hit by the pytest suite.
+- The application code, DB schema, API contract, and JWT implementation were not changed.
+
+### 4. Fix applied
+- Added the missing job-level environment variables in `.github/workflows/nme-ci.yml`.
+- This was the minimal workflow-only change required to match the project’s expected runtime configuration.
+
+### 5. Files changed
+- `.github/workflows/nme-ci.yml`
+
+### 6. Local validation
+- Local pytest: 10 passed
+- Browser pytest: 2 passed
+- Frontend build: PASS
+- API smoke: PASS
+- CORS: PASS
+- DB protection: PASS
+- DB counts remained stable at users=8, products=4, deals=23, orders=16, auth_sessions=82.
+
+### 7. Remote verification
+- Previous failed run: `33131230501`
+- Final successful run: `33132691173`
+- GitHub Actions result: PASS
+- Quality gate: PASS
+
+### 8. Final verdict
+- Step 58 is COMPLETE.
+- The root cause was a missing CI environment configuration, and the workflow fix was verified with a successful remote GitHub Actions run.
+
 ## STEP 47: NME 전체 거래 흐름 End-to-End 실측 검증
 
 ### 1. 목적
