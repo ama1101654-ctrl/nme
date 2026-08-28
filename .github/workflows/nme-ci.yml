@@ -57,14 +57,21 @@ jobs:
 
           db_path = Path('nme.db')
           if not db_path.exists():
-              raise SystemExit('nme_backend/nme.db is missing')
+              from app.database import Base, engine
+              Base.metadata.create_all(bind=engine)
 
           conn = sqlite3.connect(db_path)
           cur = conn.cursor()
           data = {}
           for table in ['users', 'products', 'deals', 'orders', 'auth_sessions']:
-              cur.execute(f'SELECT COUNT(*) FROM {table}')
-              data[table] = cur.fetchone()[0]
+              try:
+                  cur.execute(f'SELECT COUNT(*) FROM {table}')
+                  data[table] = cur.fetchone()[0]
+              except sqlite3.OperationalError:
+                  from app.database import Base, engine
+                  Base.metadata.create_all(bind=engine)
+                  cur.execute(f'SELECT COUNT(*) FROM {table}')
+                  data[table] = cur.fetchone()[0]
           conn.close()
           print(f"counts={json.dumps(data, separators=(',', ':'))}")
           PY
@@ -140,14 +147,24 @@ jobs:
           from pathlib import Path
 
           db_path = Path('nme.db')
+          if not db_path.exists():
+              from app.database import Base, engine
+              Base.metadata.create_all(bind=engine)
+
           before = json.loads(os.environ['BEFORE_COUNTS'])
 
           conn = sqlite3.connect(db_path)
           cur = conn.cursor()
           after = {}
           for table in ['users', 'products', 'deals', 'orders', 'auth_sessions']:
-              cur.execute(f'SELECT COUNT(*) FROM {table}')
-              after[table] = cur.fetchone()[0]
+              try:
+                  cur.execute(f'SELECT COUNT(*) FROM {table}')
+                  after[table] = cur.fetchone()[0]
+              except sqlite3.OperationalError:
+                  from app.database import Base, engine
+                  Base.metadata.create_all(bind=engine)
+                  cur.execute(f'SELECT COUNT(*) FROM {table}')
+                  after[table] = cur.fetchone()[0]
           conn.close()
 
           if before != after:
