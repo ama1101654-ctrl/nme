@@ -57,6 +57,7 @@ jobs:
 
           db_path = Path('nme.db')
           if not db_path.exists():
+              import app.models  # noqa: F401
               from app.database import Base, engine
               Base.metadata.create_all(bind=engine)
 
@@ -68,6 +69,7 @@ jobs:
                   cur.execute(f'SELECT COUNT(*) FROM {table}')
                   data[table] = cur.fetchone()[0]
               except sqlite3.OperationalError:
+                  import app.models  # noqa: F401
                   from app.database import Base, engine
                   Base.metadata.create_all(bind=engine)
                   cur.execute(f'SELECT COUNT(*) FROM {table}')
@@ -148,6 +150,7 @@ jobs:
 
           db_path = Path('nme.db')
           if not db_path.exists():
+              import app.models  # noqa: F401
               from app.database import Base, engine
               Base.metadata.create_all(bind=engine)
 
@@ -161,6 +164,7 @@ jobs:
                   cur.execute(f'SELECT COUNT(*) FROM {table}')
                   after[table] = cur.fetchone()[0]
               except sqlite3.OperationalError:
+                  import app.models  # noqa: F401
                   from app.database import Base, engine
                   Base.metadata.create_all(bind=engine)
                   cur.execute(f'SELECT COUNT(*) FROM {table}')
