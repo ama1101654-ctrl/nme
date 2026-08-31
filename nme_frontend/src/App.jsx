@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
 // API base. Change via Vite env: VITE_API_URL or default to backend address.
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
@@ -812,6 +812,24 @@ function formatPrice(n){
   }
 }
 
+function resolveWebSocketUrl(){
+  const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').trim()
+
+  if(!apiBase){
+    return 'ws://127.0.0.1:8000/ws/ticker'
+  }
+
+  try{
+    const parsed = new URL(apiBase)
+    const protocol = parsed.protocol === 'https:' ? 'wss' : 'ws'
+    return `${protocol}://${parsed.host}/ws/ticker`
+  }catch(err){
+    const normalized = apiBase.replace(/^https?:\/\//i, '').replace(/\/$/, '')
+    const protocol = apiBase.startsWith('https://') ? 'wss' : 'ws'
+    return `${protocol}://${normalized}/ws/ticker`
+  }
+}
+
 export default function App(){
   const authenticationContext = resolveAuthenticationContext()
   const currentUserBootstrap = resolveCurrentUserBootstrapContext()
@@ -865,6 +883,17 @@ export default function App(){
   const [historyActionMessage, setHistoryActionMessage] = useState(null)
   const [historyActionError, setHistoryActionError] = useState(null)
   const [showAllActionItems, setShowAllActionItems] = useState(false)
+  const [tickerState, setTickerState] = useState({
+    latestPrice: null,
+    previousPrice: null,
+    priceChange: 0,
+    priceChangePercent: 0,
+    lastUpdateTime: null,
+    history: [],
+    connectionStatus: 'CONNECTING',
+    notification: null,
+  })
+  const tickerAlertLastKeyRef = useRef(null)
 
   const activeUser = currentUser || fallbackCurrentUser
   const isSeller = isSellerRole(activeUser.role)
@@ -1458,6 +1487,122 @@ export default function App(){
     ? (historyError.includes('서버와 통신') ? '서버와 통신할 수 없습니다.' : '처리할 거래를 불러오지 못했습니다.')
     : null
 
+  useEffect(()=>{
+    if(isAuthGateVisible) return
+
+    let socket = null
+    let mounted = true
+
+    try{
+      socket = new WebSocket(resolveWebSocketUrl())
+
+      socket.onopen = ()=>{
+        if(!mounted) return
+        setTickerState(prev => ({
+          ...prev,
+          connectionStatus: 'LIVE',
+          notification: prev.notification || { type: 'info', title: 'Market feed connected', detail: 'Real-time ticker online' }
+        }))
+      }
+
+      socket.onmessage = (event)=>{
+        if(!mounted) return
+
+        try{
+          const payload = JSON.parse(event.data)
+          const nextPrice = Number(payload.price)
+          const nextTime = payload.time || new Date().toISOString()
+
+          setTickerState(prev => {
+            const lastPrice = prev.latestPrice ?? nextPrice
+            const priceChange = lastPrice ? nextPrice - lastPrice : 0
+            const priceChangePercent = lastPrice ? (priceChange / lastPrice) * 100 : 0
+            const history = [...prev.history, { price: nextPrice, time: nextTime }].slice(-60)
+            const alertKey = Math.abs(priceChangePercent) >= 5
+              ? `${priceChangePercent >= 0 ? 'surge' : 'drop'}-${priceChangePercent.toFixed(2)}`
+              : null
+
+            let notification = null
+            if(alertKey && alertKey !== tickerAlertLastKeyRef.current){
+              tickerAlertLastKeyRef.current = alertKey
+              notification = {
+                type: priceChangePercent >= 0 ? 'surge' : 'drop',
+                title: priceChangePercent >= 0 ? 'Price Surge' : 'Price Drop',
+                detail: `${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(2)}% • ${formatPrice(nextPrice)} • ${new Date(nextTime).toLocaleTimeString('ko-KR')}`,
+              }
+            }
+
+            return {
+              latestPrice: nextPrice,
+              previousPrice: prev.latestPrice ?? nextPrice,
+              priceChange,
+              priceChangePercent,
+              lastUpdateTime: nextTime,
+              history,
+              connectionStatus: 'LIVE',
+              notification,
+            }
+          })
+        }catch(err){
+          console.error('Ticker payload parse error', err)
+        }
+      }
+
+      socket.onerror = ()=>{
+        if(!mounted) return
+        setTickerState(prev => ({
+          ...prev,
+          connectionStatus: 'ERROR',
+          notification: { type: 'error', title: 'Market feed error', detail: 'WebSocket encountered an error.' },
+        }))
+      }
+
+      socket.onclose = ()=>{
+        if(!mounted) return
+        setTickerState(prev => ({
+          ...prev,
+          connectionStatus: 'DISCONNECTED',
+        }))
+      }
+    }catch(err){
+      console.error('WebSocket setup error', err)
+      setTickerState(prev => ({
+        ...prev,
+        connectionStatus: 'ERROR',
+        notification: { type: 'error', title: 'Connection failed', detail: 'Unable to open the ticker stream.' },
+      }))
+    }
+
+    return ()=>{
+      mounted = false
+      if(socket){
+        socket.close()
+      }
+    }
+  }, [isAuthGateVisible])
+
+  const tickerPrice = tickerState.latestPrice ?? market[0]?.price ?? 2500
+  const tickerPreviousPrice = tickerState.previousPrice ?? tickerPrice
+  const tickerChange = tickerState.latestPrice ? tickerState.latestPrice - tickerPreviousPrice : 0
+  const tickerChangePercent = tickerPreviousPrice ? (tickerChange / tickerPreviousPrice) * 100 : 0
+  const tickerHistory = tickerState.history.length > 0 ? tickerState.history : [{ price: tickerPrice, time: new Date().toISOString() }]
+  const tickerChartValues = tickerHistory.map(item => Number(item.price) || 0)
+  const tickerChartMin = Math.min(...tickerChartValues)
+  const tickerChartMax = Math.max(...tickerChartValues)
+  const chartRange = tickerChartMax - tickerChartMin || 1
+
+  const tickerChartPoints = tickerHistory.map((point, index) => {
+    const chartWidth = 640
+    const chartHeight = 180
+    const ratio = tickerHistory.length > 1 ? index / (tickerHistory.length - 1) : 0
+    const x = 10 + ratio * (chartWidth - 20)
+    const priceRatio = (Number(point.price) - tickerChartMin) / chartRange
+    const y = chartHeight - 18 - priceRatio * (chartHeight - 36)
+    return { x, y, price: Number(point.price), time: point.time }
+  })
+
+  const tickerChartPath = tickerChartPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
+
   const historyDashboard = {
     total: historyItems.length,
     completed: myHistory.filter(item => item.completed).length,
@@ -1585,6 +1730,83 @@ export default function App(){
         {userError && <div className="error-msg">{userError}</div>}
 
         <section>
+          <div className="trader-dashboard card">
+            <div className="trader-header">
+              <div>
+                <div className="trader-kicker">NME REAL-TIME MARKET</div>
+                <h2>Trader Dashboard</h2>
+              </div>
+              <div className={`signal-pill ${tickerState.connectionStatus.toLowerCase()}`}>
+                {tickerState.connectionStatus === 'LIVE' ? '● LIVE' : tickerState.connectionStatus === 'CONNECTING' ? '● CONNECTING' : tickerState.connectionStatus === 'ERROR' ? '● ERROR' : '● DISCONNECTED'}
+              </div>
+            </div>
+
+            <div className="ticker-grid">
+              <div className="ticker-card primary">
+                <div className="ticker-label">Current Price</div>
+                <div className="ticker-price">{formatPrice(tickerPrice)}</div>
+                <div className={`ticker-change ${tickerChange >= 0 ? 'up' : 'down'}`}>
+                  {tickerChange >= 0 ? '+' : ''}{formatPrice(tickerChange)}
+                </div>
+                <div className={`ticker-change ${tickerChangePercent >= 0 ? 'up' : 'down'}`}>
+                  {tickerChangePercent >= 0 ? '+' : ''}{tickerChangePercent.toFixed(2)}%
+                </div>
+                <div className="ticker-timestamp">Updated: {tickerState.lastUpdateTime ? new Date(tickerState.lastUpdateTime).toLocaleTimeString('ko-KR') : 'Waiting...'}</div>
+              </div>
+
+              <div className="ticker-card">
+                <div className="ticker-label">Previous</div>
+                <div className="ticker-subvalue">{formatPrice(tickerPreviousPrice)}</div>
+                <div className="ticker-label muted-label">Last update</div>
+                <div className="ticker-subvalue small">{tickerState.lastUpdateTime ? new Date(tickerState.lastUpdateTime).toLocaleTimeString('ko-KR') : '—'}</div>
+              </div>
+
+              <div className="ticker-card">
+                <div className="ticker-label">Market Status</div>
+                <div className="ticker-subvalue">{tickerState.connectionStatus}</div>
+                <div className="ticker-label muted-label">Feed</div>
+                <div className="ticker-subvalue small">/ws/ticker</div>
+              </div>
+            </div>
+
+            <div className="chart-panel">
+              <div className="chart-header">
+                <div>Real-Time Price</div>
+                <div className="chart-meta">Last {tickerHistory.length} ticks</div>
+              </div>
+              <svg viewBox="0 0 640 180" className="ticker-chart" role="img" aria-label="Real-time price chart">
+                <path d={tickerChartPath} className="chart-line" />
+                {tickerChartPoints.map((point, index) => (
+                  <circle key={`${point.time}-${index}`} cx={point.x} cy={point.y} r="2.5" className="chart-point" />
+                ))}
+              </svg>
+            </div>
+
+            <div className="dashboard-lower-grid">
+              <div className="mini-panel">
+                <div className="mini-title">Order Book</div>
+                <div className="placeholder-box">Backend integration pending</div>
+              </div>
+
+              <div className="mini-panel">
+                <div className="mini-title">Trade History</div>
+                <div className="placeholder-box">Real-time trade stream coming soon</div>
+              </div>
+            </div>
+
+            <div className="notification-panel">
+              <div className="mini-title">Price Notification</div>
+              {tickerState.notification ? (
+                <div className={`notification-badge ${tickerState.notification.type}`}>
+                  <div className="notification-title">{tickerState.notification.title}</div>
+                  <div className="notification-detail">{tickerState.notification.detail}</div>
+                </div>
+              ) : (
+                <div className="notification-empty">Waiting for a price move beyond ±5%.</div>
+              )}
+            </div>
+          </div>
+
           {activeView === 'market' && (
             <>
           <div className="proposal" style={{paddingTop:0}}>

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -5,7 +6,7 @@ from threading import Lock
 from time import monotonic
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -462,6 +463,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def build_ticker_payload(base_price: float = 2500.0, variation: float = 0.0):
+    """Generate a deterministic mock ticker payload for the trading dashboard.
+
+    The payload intentionally avoids touching the database and is designed so
+    future real market feeds can replace this helper without changing the
+    WebSocket contract.
+    """
+    price = round(base_price + variation, 2)
+    return {
+        'price': price,
+        'time': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.websocket('/ws/ticker')
+async def websocket_ticker(websocket: WebSocket):
+    """Stream a simple mock market ticker to dashboard clients."""
+    await websocket.accept()
+
+    base_price = 2500.0
+    variation_sequence = [0.0, 2.5, -1.5, 4.0, -3.0, 1.0, 0.0, 3.5, -2.0, 2.0]
+    tick_index = 0
+
+    try:
+        while True:
+            variation = variation_sequence[tick_index % len(variation_sequence)]
+            payload = build_ticker_payload(base_price=base_price, variation=variation)
+            await websocket.send_json(payload)
+            tick_index += 1
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        return
+    except Exception:
+        await websocket.close(code=1011)
+        raise
 
 
 @app.middleware('http')
