@@ -194,3 +194,21 @@ class DealCompletionResponse(BaseModel):
     completed: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OrderBookLevel(BaseModel):
+    price: float
+    quantity: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrderBookResponse(BaseModel):
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
+    best_bid: float | None = None
+    best_ask: float | None = None
+    spread: float | None = None
+    time: str
+
+    model_config = ConfigDict(from_attributes=True)

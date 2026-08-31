@@ -16,8 +16,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from . import crud
-from .database import Base, engine, get_db
-from .models import AuthSession, Item, User
+from .database import Base, SessionLocal, engine, get_db
+from .models import AuthSession, Item, Product, User
 from .schemas import (
     AuthSessionActionResponse,
     AuthSessionCleanupResponse,
@@ -479,6 +479,76 @@ def build_ticker_payload(base_price: float = 2500.0, variation: float = 0.0):
     }
 
 
+def _safe_float(value):
+    """Coerce numeric DB values into a float while treating invalid entries safely."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_orderbook_snapshot(db: Session | None = None):
+    """Build a read-only snapshot from the existing project data model.
+
+    Because the project currently stores no explicit order direction (buy/sell) in
+    the `orders` table, bids are derived from active buyer orders and asks are
+    derived from currently available product listings. This preserves the existing
+    schema and avoids destructive migration work.
+    """
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+
+    try:
+        active_order_statuses = {'PENDING', 'ACCEPTED', 'PAID', 'SHIPPED'}
+        bid_levels: dict[float, float] = {}
+        for order in db.query(crud.Order).filter(crud.Order.status.in_(sorted(active_order_statuses))).all():
+            if order.quantity is None or order.price is None:
+                continue
+            quantity = _safe_float(order.quantity)
+            price = _safe_float(order.price)
+            if quantity <= 0 or price <= 0:
+                continue
+            bid_levels[price] = bid_levels.get(price, 0.0) + quantity
+
+        available_products = db.query(Product).filter(Product.status == 'available').all()
+        ask_levels: dict[float, float] = {}
+        for product in available_products:
+            quantity = _safe_float(product.quantity)
+            price = _safe_float(product.price)
+            if quantity <= 0 or price <= 0:
+                continue
+            ask_levels[price] = ask_levels.get(price, 0.0) + quantity
+
+        bids = [
+            {'price': round(price, 2), 'quantity': round(quantity, 2)}
+            for price, quantity in sorted(bid_levels.items(), reverse=True)
+        ]
+        asks = [
+            {'price': round(price, 2), 'quantity': round(quantity, 2)}
+            for price, quantity in sorted(ask_levels.items())
+        ]
+
+        best_bid = bids[0]['price'] if bids else None
+        best_ask = asks[0]['price'] if asks else None
+        spread = None if best_bid is None or best_ask is None else round(best_ask - best_bid, 2)
+
+        return {
+            'bids': bids,
+            'asks': asks,
+            'best_bid': best_bid,
+            'best_ask': best_ask,
+            'spread': spread,
+            'time': datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        if close_db:
+            db.close()
+
+
 @app.websocket('/ws/ticker')
 async def websocket_ticker(websocket: WebSocket):
     """Stream a simple mock market ticker to dashboard clients."""
@@ -494,6 +564,26 @@ async def websocket_ticker(websocket: WebSocket):
             payload = build_ticker_payload(base_price=base_price, variation=variation)
             await websocket.send_json(payload)
             tick_index += 1
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        return
+    except Exception:
+        await websocket.close(code=1011)
+        raise
+
+
+@app.websocket('/ws/orderbook')
+async def websocket_orderbook(websocket: WebSocket):
+    """Stream a read-only order book snapshot derived from current products and orders."""
+    await websocket.accept()
+
+    try:
+        while True:
+            with SessionLocal() as db:
+                payload = build_orderbook_snapshot(db=db)
+            await websocket.send_json(payload)
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         return
