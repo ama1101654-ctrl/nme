@@ -212,3 +212,14 @@ class OrderBookResponse(BaseModel):
     time: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TradeResponse(BaseModel):
+    trade_id: int
+    product_id: int
+    price: float
+    quantity: float
+    side: Literal["buy", "sell"]
+    time: datetime
+
+    model_config = ConfigDict(from_attributes=True)

@@ -549,6 +549,72 @@ def build_orderbook_snapshot(db: Session | None = None):
             db.close()
 
 
+def build_trade_snapshot(db: Session | None = None, event_index: int = 0):
+    """Build a single trade payload from existing project data when available.
+
+    We intentionally keep the schema unchanged and avoid any new migration. If
+    real Deal/Order data exists, we surface it as a trade event. Otherwise we use
+    a deterministic, testable mock sequence so the WebSocket always emits a valid
+    payload without randomness.
+    """
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+
+    try:
+        deal = db.query(crud.Deal).order_by(crud.Deal.id.desc()).first()
+        if deal is not None:
+            trade_id = int(deal.id)
+            product_id = int(deal.product_id)
+            price = _safe_float(deal.proposed_price)
+            quantity = _safe_float(deal.quantity)
+            side = 'buy'
+            time = datetime.now(timezone.utc).isoformat()
+            return {
+                'trade_id': trade_id,
+                'product_id': product_id,
+                'price': round(price, 2),
+                'quantity': round(quantity, 2),
+                'side': side,
+                'time': time,
+            }
+
+        order = db.query(crud.Order).order_by(crud.Order.id.desc()).first()
+        if order is not None:
+            trade_id = int(order.id)
+            product_id = int(order.product_id)
+            price = _safe_float(order.price)
+            quantity = _safe_float(order.quantity)
+            side = 'buy'
+            time = datetime.now(timezone.utc).isoformat()
+            return {
+                'trade_id': trade_id,
+                'product_id': product_id,
+                'price': round(price, 2),
+                'quantity': round(quantity, 2),
+                'side': side,
+                'time': time,
+            }
+
+        trade_id = 1000 + event_index
+        product_id = 1
+        price = 2450.5 + (event_index % 10) * 0.75
+        quantity = 10.0 + (event_index % 5) * 2.5
+        side = 'buy' if event_index % 2 == 0 else 'sell'
+        return {
+            'trade_id': trade_id,
+            'product_id': product_id,
+            'price': round(price, 2),
+            'quantity': round(quantity, 2),
+            'side': side,
+            'time': datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        if close_db:
+            db.close()
+
+
 @app.websocket('/ws/ticker')
 async def websocket_ticker(websocket: WebSocket):
     """Stream a simple mock market ticker to dashboard clients."""
@@ -584,6 +650,28 @@ async def websocket_orderbook(websocket: WebSocket):
             with SessionLocal() as db:
                 payload = build_orderbook_snapshot(db=db)
             await websocket.send_json(payload)
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        return
+    except Exception:
+        await websocket.close(code=1011)
+        raise
+
+
+@app.websocket('/ws/trades')
+async def websocket_trades(websocket: WebSocket):
+    """Stream a simple trade event payload derived from live data when available."""
+    await websocket.accept()
+
+    event_index = 0
+    try:
+        while True:
+            with SessionLocal() as db:
+                payload = build_trade_snapshot(db=db, event_index=event_index)
+            await websocket.send_json(payload)
+            event_index += 1
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         return
