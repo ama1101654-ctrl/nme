@@ -21,3 +21,4 @@ blobs/
 index.json
 manifest.json
 oci-layout
+*.log
