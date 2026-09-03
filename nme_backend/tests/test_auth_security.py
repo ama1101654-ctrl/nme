@@ -72,6 +72,49 @@ def test_seller_session_ownership_and_revoke_all(client):
     assert revoke_all.json()['status'] == 'all_sessions_revoked'
 
 
+def test_order_and_deal_creation_enforces_authenticated_buyer(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    auth_headers = {'Authorization': f"Bearer {buyer['access_token']}"}
+    product_id = seeded_ids['product_id']
+    price = seeded_ids['product_price']
+
+    missing_auth_order = client.post('/orders', json={'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 1, 'price': price})
+    assert missing_auth_order.status_code == 401
+
+    mismatched_order = client.post(
+        '/orders',
+        json={'product_id': product_id, 'buyer_id': seeded_ids['seller_id'], 'quantity': 1, 'price': price},
+        headers=auth_headers,
+    )
+    assert mismatched_order.status_code == 403
+
+    valid_order = client.post(
+        '/orders',
+        json={'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 1, 'price': price},
+        headers=auth_headers,
+    )
+    assert valid_order.status_code == 200
+    assert valid_order.json()['buyer_id'] == seeded_ids['buyer_id']
+
+    missing_auth_deal = client.post('/deals', json={'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 1, 'proposed_price': price})
+    assert missing_auth_deal.status_code == 401
+
+    mismatched_deal = client.post(
+        '/deals',
+        json={'product_id': product_id, 'buyer_id': seeded_ids['seller_id'], 'quantity': 1, 'proposed_price': price},
+        headers=auth_headers,
+    )
+    assert mismatched_deal.status_code == 403
+
+    valid_deal = client.post(
+        '/deals',
+        json={'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 1, 'proposed_price': price},
+        headers=auth_headers,
+    )
+    assert valid_deal.status_code == 200
+    assert valid_deal.json()['buyer_id'] == seeded_ids['buyer_id']
+
+
 def test_cors_regression(client):
     allowed_localhost = client.get('/market', headers={'Origin': 'http://localhost:5174'})
     allowed_loopback = client.get('/market', headers={'Origin': 'http://127.0.0.1:5174'})

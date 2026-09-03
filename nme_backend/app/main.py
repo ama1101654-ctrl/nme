@@ -966,26 +966,39 @@ def cleanup_auth_sessions(
 
 
 @app.post("/orders", response_model=OrderResponse, tags=["orders"])
-def create_order(order: OrderCreate, db: Session = Depends(get_db)):
-    """Create a new order for a product by a buyer.
+def create_order(
+    order: OrderCreate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new order for the authenticated buyer.
 
-    Minimal validation: ids and numeric fields must be positive.
+    The client must not impersonate another buyer id. Existing buyer_id data is
+    retained only for API compatibility, but the authenticated session is the source of truth.
     """
-    # Basic validation
+    if order.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
+
     if order.product_id <= 0 or order.buyer_id <= 0:
         raise HTTPException(status_code=400, detail="product_id and buyer_id must be > 0")
     if order.quantity <= 0 or order.price <= 0:
         raise HTTPException(status_code=400, detail="quantity and price must be > 0")
 
-    # Ensure referenced product and user exist
     db_product = crud.get_product(db=db, product_id=order.product_id)
     if db_product is None:
         raise HTTPException(status_code=404, detail="Product not found")
+
     db_user = crud.get_user(db=db, user_id=order.buyer_id)
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return crud.create_order(db=db, order=order)
+    safe_order = OrderCreate(
+        product_id=order.product_id,
+        buyer_id=current_user.id,
+        quantity=order.quantity,
+        price=order.price,
+    )
+    return crud.create_order(db=db, order=safe_order)
 
 
 @app.get("/orders", response_model=list[OrderResponse], tags=["orders"])
@@ -1027,12 +1040,19 @@ def read_market(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 
 
 @app.post("/deals", response_model=DealResponse, tags=["deals"])
-def create_deal(deal: DealCreate, db: Session = Depends(get_db)):
+def create_deal(
+    deal: DealCreate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
     """Create a deal (negotiation) for a market product.
 
-    Validations: product and buyer existence, numeric fields > 0, and product availability.
+    Validations: product and authenticated buyer existence, numeric fields > 0,
+    and product availability.
     """
-    # Basic numeric validation
+    if deal.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
+
     if deal.product_id <= 0 or deal.buyer_id <= 0:
         raise HTTPException(status_code=400, detail="product_id and buyer_id must be > 0")
     if deal.quantity <= 0:
@@ -1040,7 +1060,6 @@ def create_deal(deal: DealCreate, db: Session = Depends(get_db)):
     if deal.proposed_price <= 0:
         raise HTTPException(status_code=400, detail="proposed_price must be > 0")
 
-    # Existence checks
     db_product = crud.get_product(db=db, product_id=deal.product_id)
     if db_product is None:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -1048,11 +1067,16 @@ def create_deal(deal: DealCreate, db: Session = Depends(get_db)):
     if db_buyer is None:
         raise HTTPException(status_code=404, detail="Buyer not found")
 
-    # Product must be available per Market rules
     if getattr(db_product, "status", None) != "available":
         raise HTTPException(status_code=400, detail="Product is not available")
 
-    return crud.create_deal(db=db, deal=deal)
+    safe_deal = DealCreate(
+        product_id=deal.product_id,
+        buyer_id=current_user.id,
+        quantity=deal.quantity,
+        proposed_price=deal.proposed_price,
+    )
+    return crud.create_deal(db=db, deal=safe_deal)
 
 
 @app.get("/deals", response_model=list[DealResponse], tags=["deals"])

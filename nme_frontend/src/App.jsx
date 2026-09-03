@@ -1173,7 +1173,7 @@ export default function App(){
         quantity: Number(quantity),
         proposed_price: Number(proposedPrice)
       }
-      const res = await fetch(API + '/deals', {
+      const res = await authFetch(API + '/deals', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify(payload)
@@ -1232,7 +1232,7 @@ export default function App(){
     setStatusMessage(null)
     setStatusUpdating(true)
     try{
-      const res = await fetch(API + `/deals/${deal.id}/status`, {
+      const res = await authFetch(API + `/deals/${deal.id}/status`, {
         method: 'PATCH',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ status: newStatus })
@@ -1300,7 +1300,7 @@ export default function App(){
     setOrderMessage(null)
     setOrderCreating(true)
     try{
-      const res = await fetch(API + `/deals/${deal.id}/create-order`, { method: 'POST' })
+      const res = await authFetch(API + `/deals/${deal.id}/create-order`, { method: 'POST' })
 
       if(res.ok){
         const data = await res.json()
@@ -1353,7 +1353,7 @@ export default function App(){
     setOrderStatusUpdating(true)
 
     try{
-      const res = await fetch(API + `/orders/${order.id}/status`, {
+      const res = await authFetch(API + `/orders/${order.id}/status`, {
         method: 'PATCH',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ status: action.nextStatus })

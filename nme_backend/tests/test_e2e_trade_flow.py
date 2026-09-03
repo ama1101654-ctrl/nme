@@ -64,6 +64,7 @@ def test_e2e_trade_flow_and_history_dashboard(client, seeded_ids):
 
     deal_response = client.post(
         '/deals',
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
         json={
             'product_id': product_id,
             'buyer_id': buyer_id,
@@ -78,13 +79,17 @@ def test_e2e_trade_flow_and_history_dashboard(client, seeded_ids):
 
     agree_response = client.patch(
         f"/deals/{deal['id']}/status",
+        headers={'Authorization': f"Bearer {seller['access_token']}"},
         json={'status': 'AGREED'},
     )
     assert agree_response.status_code == 200
     agreed_deal = agree_response.json()
     assert agreed_deal['status'] == 'AGREED'
 
-    order_response = client.post(f"/deals/{deal['id']}/create-order")
+    order_response = client.post(
+        f"/deals/{deal['id']}/create-order",
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
     assert order_response.status_code == 200
     order = order_response.json()
     assert order['id']
@@ -97,6 +102,7 @@ def test_e2e_trade_flow_and_history_dashboard(client, seeded_ids):
     for next_status in next_statuses:
         status_response = client.patch(
             f"/orders/{current_order['id']}/status",
+            headers={'Authorization': f"Bearer {buyer['access_token']}"},
             json={'status': next_status},
         )
         assert status_response.status_code == 200
