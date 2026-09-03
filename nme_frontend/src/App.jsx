@@ -812,22 +812,47 @@ function formatPrice(n){
   }
 }
 
-function resolveWebSocketUrl(){
+function resolveSocketUrl(path){
   const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').trim()
 
   if(!apiBase){
-    return 'ws://127.0.0.1:8000/ws/ticker'
+    return `ws://127.0.0.1:8000${path}`
   }
 
   try{
     const parsed = new URL(apiBase)
     const protocol = parsed.protocol === 'https:' ? 'wss' : 'ws'
-    return `${protocol}://${parsed.host}/ws/ticker`
+    return `${protocol}://${parsed.host}${path}`
   }catch(err){
     const normalized = apiBase.replace(/^https?:\/\//i, '').replace(/\/$/, '')
     const protocol = apiBase.startsWith('https://') ? 'wss' : 'ws'
-    return `${protocol}://${normalized}/ws/ticker`
+    return `${protocol}://${normalized}${path}`
   }
+}
+
+function resolveWebSocketUrl(){
+  return resolveSocketUrl('/ws/ticker')
+}
+
+function resolveOrderBookSocketUrl(){
+  return resolveSocketUrl('/ws/orderbook')
+}
+
+function resolveTradeSocketUrl(){
+  return resolveSocketUrl('/ws/trades')
+}
+
+function formatTradeSide(side){
+  const normalized = String(side || '').toLowerCase()
+  if(normalized === 'buy') return 'BUY'
+  if(normalized === 'sell') return 'SELL'
+  return '—'
+}
+
+function formatTradeQuantity(value){
+  const numeric = Number(value)
+  if(!Number.isFinite(numeric)) return '—'
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric)
 }
 
 export default function App(){
@@ -893,6 +918,18 @@ export default function App(){
     connectionStatus: 'CONNECTING',
     notification: null,
   })
+  const [orderBookState, setOrderBookState] = useState({
+    bids: [],
+    asks: [],
+    bestBid: null,
+    bestAsk: null,
+    spread: null,
+    time: null,
+    connectionStatus: 'CONNECTING',
+  })
+  const [trades, setTrades] = useState([])
+  const [tradeConnectionStatus, setTradeConnectionStatus] = useState('CONNECTING')
+  const [orderBookConnectionStatus, setOrderBookConnectionStatus] = useState('CONNECTING')
   const tickerAlertLastKeyRef = useRef(null)
 
   const activeUser = currentUser || fallbackCurrentUser
@@ -1581,6 +1618,127 @@ export default function App(){
     }
   }, [isAuthGateVisible])
 
+  useEffect(()=>{
+    if(isAuthGateVisible) return
+
+    let socket = null
+    let reconnectTimer = null
+    let mounted = true
+    let attempt = 0
+
+    const connect = ()=>{
+      if(!mounted) return
+      setOrderBookConnectionStatus('CONNECTING')
+      socket = new WebSocket(resolveOrderBookSocketUrl())
+
+      socket.onopen = ()=>{
+        if(!mounted) return
+        setOrderBookConnectionStatus('LIVE')
+        attempt = 0
+      }
+
+      socket.onmessage = (event)=>{
+        try{
+          const payload = JSON.parse(event.data)
+          if(!payload || typeof payload !== 'object') return
+          setOrderBookState({
+            bids: Array.isArray(payload.bids) ? payload.bids : [],
+            asks: Array.isArray(payload.asks) ? payload.asks : [],
+            bestBid: payload.best_bid ?? null,
+            bestAsk: payload.best_ask ?? null,
+            spread: payload.spread ?? null,
+            time: payload.time ?? null,
+            connectionStatus: 'LIVE',
+          })
+        }catch(err){
+          console.warn('Orderbook payload parse error', err)
+        }
+      }
+
+      socket.onerror = ()=>{
+        if(!mounted) return
+        setOrderBookConnectionStatus('ERROR')
+      }
+
+      socket.onclose = ()=>{
+        if(!mounted) return
+        setOrderBookConnectionStatus('DISCONNECTED')
+        const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
+        attempt += 1
+        if(reconnectTimer) clearTimeout(reconnectTimer)
+        reconnectTimer = setTimeout(()=> connect(), delay)
+      }
+    }
+
+    connect()
+
+    return ()=>{
+      mounted = false
+      if(reconnectTimer) clearTimeout(reconnectTimer)
+      if(socket) socket.close()
+    }
+  }, [isAuthGateVisible])
+
+  useEffect(()=>{
+    if(isAuthGateVisible) return
+
+    let socket = null
+    let reconnectTimer = null
+    let mounted = true
+    let attempt = 0
+
+    const connect = ()=>{
+      if(!mounted) return
+      setTradeConnectionStatus('CONNECTING')
+      socket = new WebSocket(resolveTradeSocketUrl())
+
+      socket.onopen = ()=>{
+        if(!mounted) return
+        setTradeConnectionStatus('LIVE')
+        attempt = 0
+      }
+
+      socket.onmessage = (event)=>{
+        try{
+          const payload = JSON.parse(event.data)
+          if(!payload || typeof payload !== 'object') return
+
+          const trade = {
+            ...payload,
+            side: String(payload.side || '').toLowerCase(),
+            time: payload.time || new Date().toISOString(),
+          }
+
+          setTrades(prev => [trade, ...prev.filter(item => item.trade_id !== trade.trade_id)].slice(0, 20))
+        }catch(err){
+          console.warn('Trade payload parse error', err)
+        }
+      }
+
+      socket.onerror = ()=>{
+        if(!mounted) return
+        setTradeConnectionStatus('ERROR')
+      }
+
+      socket.onclose = ()=>{
+        if(!mounted) return
+        setTradeConnectionStatus('DISCONNECTED')
+        const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
+        attempt += 1
+        if(reconnectTimer) clearTimeout(reconnectTimer)
+        reconnectTimer = setTimeout(()=> connect(), delay)
+      }
+    }
+
+    connect()
+
+    return ()=>{
+      mounted = false
+      if(reconnectTimer) clearTimeout(reconnectTimer)
+      if(socket) socket.close()
+    }
+  }, [isAuthGateVisible])
+
   const tickerPrice = tickerState.latestPrice ?? market[0]?.price ?? 2500
   const tickerPreviousPrice = tickerState.previousPrice ?? tickerPrice
   const tickerChange = tickerState.latestPrice ? tickerState.latestPrice - tickerPreviousPrice : 0
@@ -1783,14 +1941,87 @@ export default function App(){
             </div>
 
             <div className="dashboard-lower-grid">
-              <div className="mini-panel">
+              <div className="mini-panel orderbook-panel">
                 <div className="mini-title">Order Book</div>
-                <div className="placeholder-box">Backend integration pending</div>
+                <div className="feed-status-row">
+                  <span className={`mini-status ${orderBookConnectionStatus.toLowerCase()}`} />
+                  <span>{orderBookConnectionStatus}</span>
+                </div>
+                <div className="orderbook-shell">
+                  <div className="orderbook-column">
+                    <div className="orderbook-header">Bids</div>
+                    <div className="orderbook-row orderbook-row-header">
+                      <span>Price</span>
+                      <span>Qty</span>
+                    </div>
+                    {(orderBookState.bids.length ? orderBookState.bids.slice(0, 6) : [{ price: null, quantity: null }]).map((row, index) => (
+                      <div className="orderbook-row" key={`bid-${row.price ?? 'empty'}-${index}`}>
+                        <span>{row.price != null ? formatPrice(row.price) : '—'}</span>
+                        <span>{row.quantity != null ? formatTradeQuantity(row.quantity) : '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="orderbook-column">
+                    <div className="orderbook-header">Asks</div>
+                    <div className="orderbook-row orderbook-row-header">
+                      <span>Price</span>
+                      <span>Qty</span>
+                    </div>
+                    {(orderBookState.asks.length ? orderBookState.asks.slice(0, 6) : [{ price: null, quantity: null }]).map((row, index) => (
+                      <div className="orderbook-row asks" key={`ask-${row.price ?? 'empty'}-${index}`}>
+                        <span>{row.price != null ? formatPrice(row.price) : '—'}</span>
+                        <span>{row.quantity != null ? formatTradeQuantity(row.quantity) : '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="orderbook-metrics">
+                  <div>
+                    <span>Best Bid</span>
+                    <strong>{orderBookState.bestBid != null ? formatPrice(orderBookState.bestBid) : '—'}</strong>
+                  </div>
+                  <div>
+                    <span>Best Ask</span>
+                    <strong>{orderBookState.bestAsk != null ? formatPrice(orderBookState.bestAsk) : '—'}</strong>
+                  </div>
+                  <div>
+                    <span>Spread</span>
+                    <strong>{orderBookState.spread != null ? formatPrice(orderBookState.spread) : '—'}</strong>
+                  </div>
+                </div>
+                <div className="orderbook-time">Time: {orderBookState.time ? new Date(orderBookState.time).toLocaleTimeString('ko-KR') : '—'}</div>
               </div>
 
-              <div className="mini-panel">
+              <div className="mini-panel trade-panel">
                 <div className="mini-title">Trade History</div>
-                <div className="placeholder-box">Real-time trade stream coming soon</div>
+                <div className="feed-status-row">
+                  <span className={`mini-status ${tradeConnectionStatus.toLowerCase()}`} />
+                  <span>{tradeConnectionStatus}</span>
+                </div>
+                <div className="trade-table-wrap">
+                  <table className="trade-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Price</th>
+                        <th>Qty</th>
+                        <th>Side</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(trades.length ? trades : [{ time: null, price: null, quantity: null, side: null }]).slice(0, 8).map((trade, index) => (
+                        <tr key={`${trade.trade_id ?? 'trade'}-${index}`} className={trade.side === 'buy' ? 'trade-buy' : trade.side === 'sell' ? 'trade-sell' : ''}>
+                          <td>{trade.time ? new Date(trade.time).toLocaleTimeString('ko-KR', { hour12: false }) : '—'}</td>
+                          <td>{trade.price != null ? formatPrice(trade.price) : '—'}</td>
+                          <td>{trade.quantity != null ? formatTradeQuantity(trade.quantity) : '—'}</td>
+                          <td>{trade.side ? formatTradeSide(trade.side) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
 
