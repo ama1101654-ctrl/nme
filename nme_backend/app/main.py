@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import crud
 from .database import Base, SessionLocal, engine, get_db
-from .models import AuthSession, Item, Product, User
+from .models import AuthSession, Item, Order, Product, Trade, User
 from .schemas import (
     AuthSessionActionResponse,
     AuthSessionCleanupResponse,
@@ -205,6 +205,7 @@ ensure_product_reserved_quantity_column()
 app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
 SELL_RESERVATION_LOCK = Lock()
+MATCHING_LOCK = Lock()
 
 
 class InMemoryRateLimiter:
@@ -1332,3 +1333,120 @@ def patch_order_status(order_id: int, status_update: OrderStatusUpdate, db: Sess
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return updated
+
+
+def _get_matching_candidates(db: Session, order: Order):
+    """Return eligible opposite-side orders ordered by price priority and FIFO."""
+    if order.side == 'buy':
+        candidates = (
+            db.query(Order)
+            .filter(Order.product_id == order.product_id)
+            .filter(Order.side == 'sell')
+            .filter(Order.remaining_quantity is not None)
+            .filter(Order.remaining_quantity > 0)
+            .filter(Order.id != order.id)
+            .filter(Order.price <= order.price)
+            .order_by(Order.price.asc(), Order.created_at.asc(), Order.id.asc())
+            .all()
+        )
+        return [candidate for candidate in candidates if not (
+            order.buyer_id is not None and candidate.seller_id is not None and order.buyer_id == candidate.seller_id
+        )]
+
+    candidates = (
+        db.query(Order)
+        .filter(Order.product_id == order.product_id)
+        .filter(Order.side == 'buy')
+        .filter(Order.remaining_quantity is not None)
+        .filter(Order.remaining_quantity > 0)
+        .filter(Order.id != order.id)
+        .filter(Order.price >= order.price)
+        .order_by(Order.price.desc(), Order.created_at.asc(), Order.id.asc())
+        .all()
+    )
+    return [candidate for candidate in candidates if not (
+        order.seller_id is not None and candidate.buyer_id is not None and order.seller_id == candidate.buyer_id
+    )]
+
+
+@app.post("/orders/{order_id}/match")
+def match_order(
+    order_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Attempt to match a BUY or SELL order against the best opposite-side orders."""
+    order = crud.get_order(db=db, order_id=order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.side not in {'buy', 'sell'}:
+        raise HTTPException(status_code=400, detail="Order side must be buy or sell")
+
+    if order.remaining_quantity is None or order.remaining_quantity <= 0:
+        return {"order_id": order.id, "matched_quantity": 0, "trade_count": 0, "status": order.status, "trades": []}
+
+    if order.side == 'buy' and order.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
+    if order.side == 'sell' and order.seller_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seller id does not match authenticated user")
+
+    with MATCHING_LOCK:
+        db.refresh(order)
+        if order.remaining_quantity is None or order.remaining_quantity <= 0:
+            return {"order_id": order.id, "matched_quantity": 0, "trade_count": 0, "status": order.status, "trades": []}
+
+        trades = []
+        matched_quantity = 0
+        while order.remaining_quantity > 0:
+            candidates = _get_matching_candidates(db=db, order=order)
+            if not candidates:
+                break
+
+            best_candidate = candidates[0]
+            match_qty = min(order.remaining_quantity, best_candidate.remaining_quantity)
+            if match_qty <= 0:
+                break
+
+            buy_order_id = order.id if order.side == 'buy' else best_candidate.id
+            sell_order_id = best_candidate.id if order.side == 'buy' else order.id
+            trade_price = best_candidate.price if order.side == 'buy' else best_candidate.price
+
+            trade = Trade(
+                product_id=order.product_id,
+                buy_order_id=buy_order_id,
+                sell_order_id=sell_order_id,
+                quantity=match_qty,
+                price=trade_price,
+            )
+            db.add(trade)
+
+            order.remaining_quantity -= match_qty
+            best_candidate.remaining_quantity -= match_qty
+            order.status = 'FILLED' if order.remaining_quantity == 0 else 'PARTIAL'
+            best_candidate.status = 'FILLED' if best_candidate.remaining_quantity == 0 else 'PARTIAL'
+            db.add(order)
+            db.add(best_candidate)
+
+            matched_quantity += match_qty
+            trades.append({
+                'trade_id': None,
+                'product_id': order.product_id,
+                'buy_order_id': buy_order_id,
+                'sell_order_id': sell_order_id,
+                'quantity': match_qty,
+                'price': trade_price,
+            })
+            db.flush()
+
+        db.commit()
+        for idx, trade_payload in enumerate(trades):
+            trade_payload['trade_id'] = idx + 1
+
+        return {
+            'order_id': order.id,
+            'matched_quantity': matched_quantity,
+            'trade_count': len(trades),
+            'status': order.status,
+            'trades': trades,
+        }
