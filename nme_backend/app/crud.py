@@ -29,6 +29,7 @@ def create_product(db: Session, product: ProductCreate) -> Product:
         metal=product.metal,
         grade=product.grade,
         quantity=product.quantity,
+        reserved_quantity=0.0 if product.reserved_quantity is None else float(product.reserved_quantity),
         unit=product.unit,
         price=product.price,
         status=product.status,
@@ -236,9 +237,12 @@ def create_order(db: Session, order: OrderCreate) -> Order:
     """Create a new order and save it to the database."""
     db_order = Order(
         product_id=order.product_id,
-        buyer_id=order.buyer_id,
+        buyer_id=getattr(order, 'buyer_id', None),
+        seller_id=getattr(order, 'seller_id', None),
         quantity=order.quantity,
+        remaining_quantity=getattr(order, 'remaining_quantity', order.quantity),
         price=order.price,
+        side=getattr(order, 'side', 'buy'),
         status="PENDING",
     )
     db.add(db_order)
@@ -403,8 +407,11 @@ def create_order_from_deal(db: Session, deal_id: int):
     db_order = Order(
         product_id=deal.product_id,
         buyer_id=deal.buyer_id,
+        seller_id=None,
         quantity=deal.quantity,
+        remaining_quantity=deal.quantity,
         price=deal.proposed_price,
+        side="buy",
         status="PENDING",
     )
     db.add(db_order)

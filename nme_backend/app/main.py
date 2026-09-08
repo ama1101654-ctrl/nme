@@ -78,10 +78,133 @@ def ensure_auth_sessions_last_used_at_column():
         conn.commit()
 
 
+def ensure_order_schema_columns():
+    """Add SELL-order columns to existing SQLite DBs without resetting data."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(orders)")).fetchall()
+        column_names = {row[1] for row in rows}
+        columns_by_name = {row[1]: row for row in rows}
+
+        # Remove stale migration artifacts left behind by earlier partial attempts.
+        conn.execute(text("DROP TABLE IF EXISTS orders_new"))
+
+        if 'seller_id' not in column_names:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN seller_id INTEGER"))
+        if 'side' not in column_names:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN side VARCHAR(10) DEFAULT 'buy'"))
+        if 'remaining_quantity' not in column_names:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN remaining_quantity INTEGER"))
+
+        buyer_not_null = bool(columns_by_name.get('buyer_id', (None, None, None, 0))[3])
+        seller_not_null = bool(columns_by_name.get('seller_id', (None, None, None, 0))[3])
+        if buyer_not_null or seller_not_null:
+            existing_rows = conn.execute(
+                text(
+                    "SELECT id, product_id, buyer_id, seller_id, quantity, price, side, status, created_at "
+                    "FROM orders ORDER BY id"
+                )
+            ).fetchall()
+
+            conn.execute(
+                text(
+                    "CREATE TABLE orders_new ("
+                    "id INTEGER PRIMARY KEY, "
+                    "product_id INTEGER NOT NULL, "
+                    "buyer_id INTEGER, "
+                    "seller_id INTEGER, "
+                    "quantity INTEGER NOT NULL, "
+                    "remaining_quantity INTEGER, "
+                    "price INTEGER NOT NULL, "
+                    "side VARCHAR(10) NOT NULL DEFAULT 'buy', "
+                    "status VARCHAR(50) NOT NULL DEFAULT 'PENDING', "
+                    "created_at DATETIME"
+                    ")"
+                )
+            )
+            for row in existing_rows:
+                row_id, product_id, buyer_id, seller_id, quantity, price, side, status, created_at = row
+                conn.execute(
+                    text(
+                        "INSERT INTO orders_new (id, product_id, buyer_id, seller_id, quantity, remaining_quantity, price, side, status, created_at) "
+                        "VALUES (:id, :product_id, :buyer_id, :seller_id, :quantity, :remaining_quantity, :price, :side, :status, :created_at)"
+                    ),
+                    {
+                        "id": row_id,
+                        "product_id": product_id,
+                        "buyer_id": buyer_id,
+                        "seller_id": seller_id,
+                        "quantity": quantity,
+                        "remaining_quantity": quantity,
+                        "price": price,
+                        "side": side or 'buy',
+                        "status": status or 'PENDING',
+                        "created_at": created_at,
+                    },
+                )
+            conn.execute(text("DROP TABLE orders"))
+            conn.execute(text("ALTER TABLE orders_new RENAME TO orders"))
+
+        conn.execute(text("UPDATE orders SET side = 'buy' WHERE side IS NULL OR TRIM(side) = ''"))
+        conn.execute(text("UPDATE orders SET buyer_id = NULL WHERE buyer_id = 0 AND seller_id IS NOT NULL"))
+        conn.execute(text("UPDATE orders SET remaining_quantity = quantity WHERE remaining_quantity IS NULL"))
+        conn.commit()
+
+
+def ensure_trade_table():
+    """Create the trade execution ledger table without disturbing existing data."""
+    with engine.connect() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+        ).scalar()
+        if table_exists is not None:
+            return
+
+        conn.execute(
+            text(
+                "CREATE TABLE trades ("
+                "id INTEGER PRIMARY KEY, "
+                "product_id INTEGER NOT NULL, "
+                "buy_order_id INTEGER NOT NULL, "
+                "sell_order_id INTEGER NOT NULL, "
+                "quantity INTEGER NOT NULL, "
+                "price INTEGER NOT NULL, "
+                "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_trades_product_id ON trades(product_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_trades_buy_order_id ON trades(buy_order_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_trades_sell_order_id ON trades(sell_order_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at)"))
+        conn.commit()
+
+
+def ensure_product_reserved_quantity_column():
+    """Add reserved_quantity to existing products without deleting data."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(products)")).fetchall()
+        column_names = {row[1] for row in rows}
+        if 'reserved_quantity' not in column_names:
+            conn.execute(text("ALTER TABLE products ADD COLUMN reserved_quantity FLOAT NOT NULL DEFAULT 0"))
+
+        conn.execute(
+            text(
+                "UPDATE products "
+                "SET reserved_quantity = 0 "
+                "WHERE reserved_quantity IS NULL"
+            )
+        )
+        conn.commit()
+
+
 ensure_auth_sessions_last_used_at_column()
+ensure_order_schema_columns()
+ensure_trade_table()
+ensure_product_reserved_quantity_column()
 
 app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
+SELL_RESERVATION_LOCK = Lock()
 
 
 class InMemoryRateLimiter:
@@ -971,16 +1094,16 @@ def create_order(
     current_user: User = Depends(get_current_auth_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new order for the authenticated buyer.
+    """Create a new order for the authenticated user.
 
-    The client must not impersonate another buyer id. Existing buyer_id data is
-    retained only for API compatibility, but the authenticated session is the source of truth.
+    BUY orders keep the legacy flow and require a buyer_id that matches the
+    authenticated user. SELL orders are additive and require a matching seller_id,
+    while preserving the existing data model for all current buyers.
     """
-    if order.buyer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
+    side = (order.side or 'buy').strip().lower()
+    if side not in {'buy', 'sell'}:
+        raise HTTPException(status_code=400, detail='side must be buy or sell')
 
-    if order.product_id <= 0 or order.buyer_id <= 0:
-        raise HTTPException(status_code=400, detail="product_id and buyer_id must be > 0")
     if order.quantity <= 0 or order.price <= 0:
         raise HTTPException(status_code=400, detail="quantity and price must be > 0")
 
@@ -988,17 +1111,55 @@ def create_order(
     if db_product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    db_user = crud.get_user(db=db, user_id=order.buyer_id)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+    if side == 'buy':
+        if order.buyer_id is None:
+            raise HTTPException(status_code=400, detail='buyer_id is required for buy orders')
+        if order.buyer_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
+        if order.product_id <= 0 or order.buyer_id <= 0:
+            raise HTTPException(status_code=400, detail="product_id and buyer_id must be > 0")
 
-    safe_order = OrderCreate(
-        product_id=order.product_id,
-        buyer_id=current_user.id,
-        quantity=order.quantity,
-        price=order.price,
-    )
-    return crud.create_order(db=db, order=safe_order)
+        db_user = crud.get_user(db=db, user_id=order.buyer_id)
+        if db_user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        safe_order = OrderCreate(
+            product_id=order.product_id,
+            buyer_id=current_user.id,
+            seller_id=None,
+            quantity=order.quantity,
+            price=order.price,
+            side='buy',
+        )
+        return crud.create_order(db=db, order=safe_order)
+
+    if order.seller_id is None:
+        raise HTTPException(status_code=400, detail='seller_id is required for sell orders')
+    if order.seller_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seller id does not match authenticated user")
+    if db_product.seller_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Product is not owned by the authenticated seller")
+    if order.buyer_id is not None:
+        raise HTTPException(status_code=400, detail='buyer_id must be omitted for sell orders')
+
+    with SELL_RESERVATION_LOCK:
+        db.refresh(db_product)
+        available_inventory = float(db_product.quantity) - float(db_product.reserved_quantity or 0)
+        if order.quantity > available_inventory:
+            raise HTTPException(status_code=409, detail='Insufficient available inventory for sell order')
+
+        db_product.reserved_quantity = float(db_product.reserved_quantity or 0) + float(order.quantity)
+        safe_order = OrderCreate(
+            product_id=order.product_id,
+            buyer_id=None,
+            seller_id=current_user.id,
+            quantity=order.quantity,
+            price=order.price,
+            side='sell',
+        )
+        created_order = crud.create_order(db=db, order=safe_order)
+        db.commit()
+        return created_order
 
 
 @app.get("/orders", response_model=list[OrderResponse], tags=["orders"])

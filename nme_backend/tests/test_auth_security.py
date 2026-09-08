@@ -1,5 +1,8 @@
 import pytest
 
+from app.database import SessionLocal
+from app.models import Product
+
 
 pytestmark = pytest.mark.security
 
@@ -113,6 +116,83 @@ def test_order_and_deal_creation_enforces_authenticated_buyer(client, seeded_ids
     )
     assert valid_deal.status_code == 200
     assert valid_deal.json()['buyer_id'] == seeded_ids['buyer_id']
+
+
+def test_sell_order_creation_uses_authenticated_seller_identity(client, seeded_ids):
+    seller = login(client, 'charlie@example.com')
+    auth_headers = {'Authorization': f"Bearer {seller['access_token']}"}
+    product_id = seeded_ids['product_id']
+    price = seeded_ids['product_price']
+
+    mismatched_sell_order = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['buyer_id'], 'quantity': 1, 'price': price, 'side': 'sell'},
+        headers=auth_headers,
+    )
+    assert mismatched_sell_order.status_code == 403
+
+    valid_sell_order = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 1, 'price': price, 'side': 'sell'},
+        headers=auth_headers,
+    )
+    assert valid_sell_order.status_code == 200
+    payload = valid_sell_order.json()
+    assert payload['seller_id'] == seeded_ids['seller_id']
+    assert payload['side'] == 'sell'
+    assert payload['buyer_id'] is None
+
+
+def test_sell_order_validates_side_quantity_and_product_inventory(client, seeded_ids):
+    seller = login(client, 'charlie@example.com')
+    auth_headers = {'Authorization': f"Bearer {seller['access_token']}"}
+    product_id = seeded_ids['product_id']
+    price = seeded_ids['product_price']
+
+    oversize_sell = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 101, 'price': price, 'side': 'SELL'},
+        headers=auth_headers,
+    )
+    assert oversize_sell.status_code == 409
+    assert oversize_sell.json()['detail'] == 'Insufficient available inventory for sell order'
+
+    buyer_contained_sell = client.post(
+        '/orders',
+        json={'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'seller_id': seeded_ids['seller_id'], 'quantity': 5, 'price': price, 'side': 'SELL'},
+        headers=auth_headers,
+    )
+    assert buyer_contained_sell.status_code in {400, 422}
+
+    non_positive_quantity = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 0, 'price': price, 'side': 'sell'},
+        headers=auth_headers,
+    )
+    assert non_positive_quantity.status_code in {400, 422}
+
+    non_positive_price = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 5, 'price': 0, 'side': 'sell'},
+        headers=auth_headers,
+    )
+    assert non_positive_price.status_code in {400, 422}
+
+    valid_sell_with_uppercase_side = client.post(
+        '/orders',
+        json={'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 30, 'price': price, 'side': 'SELL'},
+        headers=auth_headers,
+    )
+    assert valid_sell_with_uppercase_side.status_code in {200, 201}
+    payload = valid_sell_with_uppercase_side.json()
+    assert payload['buyer_id'] is None
+    assert payload['seller_id'] == seeded_ids['seller_id']
+    assert payload['side'] == 'sell'
+
+    with SessionLocal() as db:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        assert product is not None
+        assert product.quantity == 100
 
 
 def test_cors_regression(client):

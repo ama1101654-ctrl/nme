@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ItemBase(BaseModel):
@@ -99,6 +99,7 @@ class ProductCreate(BaseModel):
     metal: str
     grade: str
     quantity: int
+    reserved_quantity: float | None = 0.0
     unit: str
     price: int
     status: str = "available"
@@ -112,22 +113,51 @@ class ProductResponse(ProductCreate):
 
 
 class OrderCreate(BaseModel):
-    """Schema used when creating a new Order."""
+    """Schema used when creating a new Order.
+
+    BUY orders are the legacy format; SELL orders are added as an additive
+    side-specific flow that keeps the existing API compatible.
+    """
 
     product_id: int
-    buyer_id: int
+    buyer_id: int | None = None
+    seller_id: int | None = None
     quantity: int
     price: int
+    side: str = "buy"
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def normalize_side(cls, value):
+        if value is None:
+            return "buy"
+        normalized = str(value).strip().lower()
+        if normalized not in {"buy", "sell"}:
+            raise ValueError("side must be buy or sell")
+        return normalized
 
 
 class OrderResponse(BaseModel):
     id: int
     product_id: int
-    buyer_id: int
+    buyer_id: int | None = None
+    seller_id: int | None = None
     quantity: int
+    remaining_quantity: int | None = None
     price: int
+    side: str = "buy"
     status: str
     created_at: datetime
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def normalize_side(cls, value):
+        if value is None:
+            return "buy"
+        normalized = str(value).strip().lower()
+        if normalized not in {"buy", "sell"}:
+            raise ValueError("side must be buy or sell")
+        return normalized
 
     model_config = ConfigDict(from_attributes=True)
 

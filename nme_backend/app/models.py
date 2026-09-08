@@ -52,6 +52,7 @@ class Product(Base):
     metal = Column(String(100), nullable=False)
     grade = Column(String(50), nullable=False)
     quantity = Column(Float, nullable=False)
+    reserved_quantity = Column(Float, nullable=False, default=0.0)
     unit = Column(String(20), nullable=False)
     price = Column(Float, nullable=False)
     status = Column(String(50), nullable=False, default="available")
@@ -59,16 +60,38 @@ class Product(Base):
 
 
 class Order(Base):
-    """A minimal Order model representing a buyer's request for a product."""
+    """A minimal Order model supporting both BUY and SELL side submissions."""
 
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, nullable=False, index=True)
-    buyer_id = Column(Integer, nullable=False, index=True)
+    buyer_id = Column(Integer, nullable=True, index=True)
+    seller_id = Column(Integer, nullable=True, index=True)
+    quantity = Column(Integer, nullable=False)
+    remaining_quantity = Column(Integer, nullable=True, default=None, index=True)
+    price = Column(Integer, nullable=False)
+    side = Column(String(10), nullable=False, default="buy", index=True)
+    status = Column(String(50), nullable=False, default="PENDING")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Trade(Base):
+    """A minimal execution ledger for future matching work.
+
+    The table intentionally records actual trade executions without changing the
+    existing Deal negotiation workflow. This keeps current APIs and data intact
+    while preparing for a later matching engine implementation.
+    """
+
+    __tablename__ = "trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    buy_order_id = Column(Integer, nullable=False, index=True)
+    sell_order_id = Column(Integer, nullable=False, index=True)
     quantity = Column(Integer, nullable=False)
     price = Column(Integer, nullable=False)
-    status = Column(String(50), nullable=False, default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
