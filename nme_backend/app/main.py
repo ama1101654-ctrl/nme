@@ -35,6 +35,7 @@ from .schemas import (
     OrderCreate,
     OrderResponse,
     TradeHistoryEntry,
+    TradeResponse,
 )
 from .schemas import OrderStatusUpdate
 from .schemas import MarketResponse
@@ -623,6 +624,34 @@ def _safe_float(value):
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _trade_side_from_orders(db: Session, trade: Trade) -> str:
+    """Resolve a single trade-side label using the linked orders while preserving compatibility."""
+    buy_order = db.query(Order).filter(Order.id == trade.buy_order_id).first()
+    sell_order = db.query(Order).filter(Order.id == trade.sell_order_id).first()
+
+    if buy_order is not None and (buy_order.side or '').lower() == 'buy':
+        return 'buy'
+    if sell_order is not None and (sell_order.side or '').lower() == 'sell':
+        return 'sell'
+    if buy_order is not None and buy_order.buyer_id is not None and buy_order.seller_id is None:
+        return 'buy'
+    if sell_order is not None and sell_order.seller_id is not None and sell_order.buyer_id is None:
+        return 'sell'
+    return 'buy'
+
+
+def _serialize_trade_response(db: Session, trade: Trade) -> dict:
+    """Return the public contract used by both HTTP trade history and WebSocket trade payloads."""
+    return {
+        'trade_id': int(trade.id),
+        'product_id': int(trade.product_id),
+        'price': float(trade.price),
+        'quantity': float(trade.quantity),
+        'side': _trade_side_from_orders(db, trade),
+        'time': trade.created_at,
+    }
 
 
 def _orderbook_side(order: Order) -> str | None:
@@ -1325,17 +1354,57 @@ def read_deal_completion(deal_id: int, db: Session = Depends(get_db)):
     return summary
 
 
+@app.get("/trades", response_model=list[TradeResponse], tags=["trades"])
+def read_trades(limit: int = 50, skip: int = 0, db: Session = Depends(get_db)):
+    """Return the most recent trade executions in a read-only, public market feed."""
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+
+    trades = (
+        db.query(Trade)
+        .order_by(Trade.created_at.desc(), Trade.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [_serialize_trade_response(db, trade) for trade in trades]
+
+
 @app.get("/orders/{order_id}/trades", response_model=list[TradeHistoryEntry], tags=["orders"])
-def read_order_trades(order_id: int, db: Session = Depends(get_db)):
+def read_order_trades(
+    order_id: int,
+    limit: int = 50,
+    skip: int = 0,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
     """Return the trade execution history associated with a specific order."""
     order = crud.get_order(db=db, order_id=order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
 
+    user_is_owner = (
+        order.buyer_id == current_user.id
+        or order.seller_id == current_user.id
+        or (order.side == 'buy' and order.buyer_id == current_user.id)
+        or (order.side == 'sell' and order.seller_id == current_user.id)
+    )
+    if not user_is_owner:
+        raise HTTPException(status_code=403, detail="Not allowed to view this order's trades")
+
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+
     trades = (
         db.query(Trade)
         .filter((Trade.buy_order_id == order_id) | (Trade.sell_order_id == order_id))
         .order_by(Trade.created_at.asc(), Trade.id.asc())
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     return [
@@ -1353,16 +1422,23 @@ def read_order_trades(order_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/products/{product_id}/trades", response_model=list[TradeHistoryEntry], tags=["products"])
-def read_product_trades(product_id: int, db: Session = Depends(get_db)):
+def read_product_trades(product_id: int, limit: int = 50, skip: int = 0, db: Session = Depends(get_db)):
     """Read the execution history for a product without allowing mutation."""
     product = crud.get_product(db=db, product_id=product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+
     trades = (
         db.query(Trade)
         .filter(Trade.product_id == product_id)
-        .order_by(Trade.created_at.asc(), Trade.id.asc())
+        .order_by(Trade.created_at.desc(), Trade.id.desc())
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     return [

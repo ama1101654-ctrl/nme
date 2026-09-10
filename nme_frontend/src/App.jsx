@@ -896,6 +896,9 @@ export default function App(){
 
   // History state for Step 18
   const [historyItems, setHistoryItems] = useState([])
+  const [realTradeHistory, setRealTradeHistory] = useState([])
+  const [realTradeHistoryLoading, setRealTradeHistoryLoading] = useState(false)
+  const [realTradeHistoryError, setRealTradeHistoryError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1411,6 +1414,28 @@ export default function App(){
     }
   }
 
+  async function loadRealTradeHistory(){
+    setRealTradeHistoryLoading(true)
+    setRealTradeHistoryError(null)
+    try{
+      const res = await fetch(API + '/trades?limit=10')
+      if(!res.ok){
+        const j = await res.json().catch(()=>({detail: res.statusText}))
+        setRealTradeHistoryError(j.detail || '거래 이력을 불러오지 못했습니다.')
+        setRealTradeHistory([])
+        return
+      }
+      const data = await res.json()
+      setRealTradeHistory(Array.isArray(data) ? data : [])
+    }catch(err){
+      console.error('real trade history error', err)
+      setRealTradeHistoryError('거래 이력을 불러오지 못했습니다.')
+      setRealTradeHistory([])
+    }finally{
+      setRealTradeHistoryLoading(false)
+    }
+  }
+
   async function loadHistory(forceReload = false){
     if(historyLoading) return
     if(historyLoaded && !forceReload) return
@@ -1464,6 +1489,7 @@ export default function App(){
   useEffect(()=>{
     if(activeView === 'history'){
       loadHistory(false)
+      loadRealTradeHistory()
     }
   }, [activeView])
 
@@ -2206,12 +2232,47 @@ export default function App(){
             <div className="proposal history-section">
               <div className="history-head">
                 <h3>거래 이력</h3>
-                <button className="secondary" onClick={()=> loadHistory(true)} disabled={historyLoading}>
-                  {historyLoading ? '불러오는 중...' : '이력 새로고침'}
+                <button className="secondary" onClick={()=> { loadHistory(true); loadRealTradeHistory() }} disabled={historyLoading || realTradeHistoryLoading}>
+                  {historyLoading || realTradeHistoryLoading ? '불러오는 중...' : '이력 새로고침'}
                 </button>
               </div>
 
               <div className="history-user">내 거래 관리 · 현재 사용자: {currentUserDisplay} · {activeUser.name} · 역할: {labelUserRole(activeUser.role)}</div>
+
+              <div className="card" style={{marginTop: 16}}>
+                <div className="mini-title">실제 체결 이력</div>
+                {realTradeHistoryLoading && <div className="info">체결 거래를 불러오는 중...</div>}
+                {!realTradeHistoryLoading && realTradeHistoryError && <div className="error-msg">{realTradeHistoryError}</div>}
+                {!realTradeHistoryLoading && !realTradeHistoryError && realTradeHistory.length === 0 && (
+                  <div className="muted">체결된 거래가 없습니다.</div>
+                )}
+                {!realTradeHistoryLoading && !realTradeHistoryError && realTradeHistory.length > 0 && (
+                  <div className="trade-table-wrap">
+                    <table className="trade-table">
+                      <thead>
+                        <tr>
+                          <th>거래시간</th>
+                          <th>상품</th>
+                          <th>가격</th>
+                          <th>수량</th>
+                          <th>구분</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {realTradeHistory.map((trade, index) => (
+                          <tr key={`${trade.trade_id ?? 'trade'}-${index}`} className={trade.side === 'buy' ? 'trade-buy' : trade.side === 'sell' ? 'trade-sell' : ''}>
+                            <td>{trade.time ? new Date(trade.time).toLocaleString('ko-KR', { hour12: false }) : '—'}</td>
+                            <td>{trade.product_id ?? '—'}</td>
+                            <td>{trade.price != null ? formatPrice(trade.price) : '—'}</td>
+                            <td>{trade.quantity != null ? formatTradeQuantity(trade.quantity) : '—'}</td>
+                            <td>{trade.side ? formatTradeSide(trade.side) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
 
               <div className="dashboard-grid">
                 <article className="card dashboard-card">
