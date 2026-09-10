@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
@@ -191,3 +192,72 @@ def test_public_trade_history_endpoint_returns_latest_trades(client, seeded_ids)
     product_payload = product_response.json()
     assert len(product_payload) == 2
     assert product_payload[0]['trade_id'] >= product_payload[1]['trade_id']
+
+
+def test_trade_detail_and_product_market_summary(client, seeded_ids):
+    product_id = seeded_ids['product_id']
+    other_product = Product(
+        seller_id=seeded_ids['seller_id'],
+        metal='Copper',
+        grade='C1020',
+        quantity=200,
+        unit='TON',
+        price=8800,
+        status='available',
+    )
+
+    other_product_id = None
+    with SessionLocal() as db:
+        db.add(other_product)
+        db.commit()
+        db.refresh(other_product)
+        other_product_id = other_product.id
+
+        empty_summary = client.get(f'/products/{other_product_id}/market-summary')
+        assert empty_summary.status_code == 200
+        assert empty_summary.json()['trade_count'] == 0
+        assert empty_summary.json()['latest_price'] is None
+
+        trade_a = Trade(product_id=product_id, buy_order_id=101, sell_order_id=201, quantity=40, price=2500)
+        trade_b = Trade(product_id=product_id, buy_order_id=102, sell_order_id=202, quantity=20, price=2520)
+        trade_c = Trade(product_id=product_id, buy_order_id=103, sell_order_id=203, quantity=30, price=2480)
+        trade_other = Trade(product_id=other_product_id, buy_order_id=104, sell_order_id=204, quantity=15, price=3000)
+        db.add_all([trade_a, trade_b, trade_c, trade_other])
+        db.commit()
+        db.refresh(trade_a)
+        db.refresh(trade_b)
+        db.refresh(trade_c)
+        db.refresh(trade_other)
+
+    detail_response = client.get(f'/trades/{trade_b.id}')
+    assert detail_response.status_code == 200
+    payload = detail_response.json()
+    assert payload['trade_id'] == trade_b.id
+    assert payload['product_id'] == product_id
+    assert payload['quantity'] == 20
+    assert payload['price'] == 2520
+    assert payload['side'] in {'buy', 'sell'}
+    assert 'time' in payload
+
+    missing_response = client.get('/trades/999999')
+    assert missing_response.status_code == 404
+
+    summary_response = client.get(f'/products/{product_id}/market-summary')
+    assert summary_response.status_code == 200
+    summary = summary_response.json()
+    assert summary['product_id'] == product_id
+    assert summary['trade_count'] == 3
+    assert summary['total_quantity'] == 90
+    assert summary['high_price'] == 2520
+    assert summary['low_price'] == 2480
+    assert summary['latest_price'] == 2480
+    assert summary['total_value'] == 2500 * 40 + 2520 * 20 + 2480 * 30
+    assert summary['average_price'] == pytest.approx((2500 * 40 + 2520 * 20 + 2480 * 30) / 90)
+
+    other_summary = client.get(f'/products/{other_product_id}/market-summary')
+    assert other_summary.status_code == 200
+    other_payload = other_summary.json()
+    assert other_payload['trade_count'] == 1
+    assert other_payload['product_id'] == other_product_id
+    assert other_payload['total_quantity'] == 15
+    assert other_payload['latest_price'] == 3000

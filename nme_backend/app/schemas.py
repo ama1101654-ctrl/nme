@@ -267,3 +267,17 @@ class TradeResponse(BaseModel):
     time: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MarketSummaryResponse(BaseModel):
+    product_id: int
+    trade_count: int
+    total_quantity: float
+    total_value: float
+    latest_price: float | None = None
+    high_price: float | None = None
+    low_price: float | None = None
+    latest_trade_time: datetime | None = None
+    average_price: float | None = None
+
+    model_config = ConfigDict(from_attributes=True)

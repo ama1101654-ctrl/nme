@@ -871,6 +871,7 @@ export default function App(){
   const [userLoading, setUserLoading] = useState(false)
   const [userError, setUserError] = useState(null)
   const [market, setMarket] = useState([])
+  const [marketSummaries, setMarketSummaries] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -1057,6 +1058,30 @@ export default function App(){
         }
         const data = await res.json()
         setMarket(data)
+
+        if(Array.isArray(data) && data.length > 0){
+          const summaryResults = await Promise.all(
+            data.map(async (product) => {
+              try{
+                const summaryRes = await fetch(API + `/products/${product.product_id}/market-summary`)
+                if(!summaryRes.ok) return [product.product_id, null]
+                const summary = await summaryRes.json().catch(() => null)
+                return [product.product_id, summary]
+              }catch(err){
+                console.warn('Market summary load failed', product.product_id, err)
+                return [product.product_id, null]
+              }
+            })
+          )
+
+          const summaryMap = {}
+          summaryResults.forEach(([productId, summary]) => {
+            summaryMap[productId] = summary
+          })
+          setMarketSummaries(summaryMap)
+        }else{
+          setMarketSummaries({})
+        }
       }catch(e){
         console.error('Market load error', e)
         setError('Market data를 불러오지 못했습니다.')
@@ -2085,6 +2110,14 @@ export default function App(){
                   <div>Quantity: <strong>{p.quantity} {p.unit}</strong></div>
                   <div>Price: <strong>{formatPrice(p.price)}</strong></div>
                   <div>Status: <strong>{p.status}</strong></div>
+                  <div style={{marginTop:10, paddingTop:8, borderTop:'1px solid #e5eefb'}}>
+                    <div style={{fontWeight:700, marginBottom:4}}>Market Summary</div>
+                    <div>Trade Count: <strong>{marketSummaries[p.product_id]?.trade_count ?? 0}</strong></div>
+                    <div>Latest: <strong>{marketSummaries[p.product_id]?.latest_price != null ? formatPrice(marketSummaries[p.product_id].latest_price) : '—'}</strong></div>
+                    <div>High/Low: <strong>{marketSummaries[p.product_id]?.high_price != null && marketSummaries[p.product_id]?.low_price != null ? `${formatPrice(marketSummaries[p.product_id].high_price)} / ${formatPrice(marketSummaries[p.product_id].low_price)}` : '—'}</strong></div>
+                    <div>Total Volume: <strong>{marketSummaries[p.product_id]?.total_quantity ?? 0}</strong></div>
+                    <div>Total Value: <strong>{marketSummaries[p.product_id]?.total_value != null ? formatPrice(marketSummaries[p.product_id].total_value) : '0'}</strong></div>
+                  </div>
                 </div>
                 <div className="card-foot">
                   <button onClick={()=> setSelected(p)}>거래 제안</button>

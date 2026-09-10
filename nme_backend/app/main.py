@@ -36,6 +36,7 @@ from .schemas import (
     OrderResponse,
     TradeHistoryEntry,
     TradeResponse,
+    MarketSummaryResponse,
 )
 from .schemas import OrderStatusUpdate
 from .schemas import MarketResponse
@@ -1352,6 +1353,71 @@ def read_deal_completion(deal_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Order not found for this Deal")
 
     return summary
+
+
+@app.get("/trades/{trade_id}", response_model=TradeResponse, tags=["trades"])
+def read_trade_detail(trade_id: int, db: Session = Depends(get_db)):
+    """Return one trade execution detail without mutating data."""
+    trade = db.query(Trade).filter(Trade.id == trade_id).first()
+    if trade is None:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    payload = _serialize_trade_response(db, trade)
+    return {
+        "trade_id": payload["trade_id"],
+        "product_id": payload["product_id"],
+        "price": payload["price"],
+        "quantity": payload["quantity"],
+        "side": payload["side"],
+        "time": payload["time"],
+    }
+
+
+@app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])
+def read_product_market_summary(product_id: int, db: Session = Depends(get_db)):
+    """Read a read-only market summary built solely from the actual Trade table."""
+    product = crud.get_product(db=db, product_id=product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    trades = (
+        db.query(Trade)
+        .filter(Trade.product_id == product_id)
+        .order_by(Trade.created_at.desc(), Trade.id.desc())
+        .all()
+    )
+
+    if not trades:
+        return {
+            "product_id": int(product_id),
+            "trade_count": 0,
+            "total_quantity": 0,
+            "total_value": 0,
+            "latest_price": None,
+            "high_price": None,
+            "low_price": None,
+            "latest_trade_time": None,
+            "average_price": None,
+        }
+
+    total_quantity = sum(int(trade.quantity) for trade in trades)
+    total_value = sum(float(trade.price) * float(trade.quantity) for trade in trades)
+    latest_trade = trades[0]
+    highest_price = max(float(trade.price) for trade in trades)
+    lowest_price = min(float(trade.price) for trade in trades)
+    average_price = total_value / total_quantity if total_quantity else None
+
+    return {
+        "product_id": int(product_id),
+        "trade_count": len(trades),
+        "total_quantity": float(total_quantity),
+        "total_value": float(total_value),
+        "latest_price": float(latest_trade.price),
+        "high_price": float(highest_price),
+        "low_price": float(lowest_price),
+        "latest_trade_time": latest_trade.created_at,
+        "average_price": float(average_price) if average_price is not None else None,
+    }
 
 
 @app.get("/trades", response_model=list[TradeResponse], tags=["trades"])
