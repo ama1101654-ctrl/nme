@@ -167,6 +167,8 @@ class OrderStatusUpdate(BaseModel):
 
     status: Literal[
         "PENDING",
+        "PARTIAL",
+        "FILLED",
         "ACCEPTED",
         "PAID",
         "SHIPPED",
@@ -240,6 +242,18 @@ class OrderBookResponse(BaseModel):
     best_ask: float | None = None
     spread: float | None = None
     time: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TradeHistoryEntry(BaseModel):
+    trade_id: int
+    product_id: int
+    buy_order_id: int
+    sell_order_id: int
+    quantity: int
+    price: int
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

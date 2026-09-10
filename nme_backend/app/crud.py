@@ -270,9 +270,11 @@ def update_order_status(db: Session, order_id: int, new_status: str):
     if order is None:
         return None
 
-    # Define allowed transitions
+    # Define allowed transitions while preserving the project's legacy status naming.
     allowed = {
-        "PENDING": ["ACCEPTED", "CANCELLED"],
+        "PENDING": ["PARTIAL", "FILLED", "ACCEPTED", "CANCELLED"],
+        "PARTIAL": ["PARTIAL", "FILLED", "CANCELLED"],
+        "FILLED": [],
         "ACCEPTED": ["PAID", "CANCELLED"],
         "PAID": ["SHIPPED"],
         "SHIPPED": ["COMPLETED"],

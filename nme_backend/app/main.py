@@ -34,6 +34,7 @@ from .schemas import (
     UserResponse,
     OrderCreate,
     OrderResponse,
+    TradeHistoryEntry,
 )
 from .schemas import OrderStatusUpdate
 from .schemas import MarketResponse
@@ -206,6 +207,17 @@ app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
 SELL_RESERVATION_LOCK = Lock()
 MATCHING_LOCK = Lock()
+
+
+def _order_status_from_remaining(order: Order) -> str:
+    """Derive a safe lifecycle status from the current remaining quantity."""
+    if order.remaining_quantity is None:
+        return "PENDING"
+    if order.remaining_quantity <= 0:
+        return "FILLED"
+    if order.quantity is not None and order.quantity > order.remaining_quantity:
+        return "PARTIAL"
+    return "PENDING"
 
 
 class InMemoryRateLimiter:
@@ -1319,6 +1331,60 @@ def read_deal_completion(deal_id: int, db: Session = Depends(get_db)):
     return summary
 
 
+@app.get("/orders/{order_id}/trades", response_model=list[TradeHistoryEntry], tags=["orders"])
+def read_order_trades(order_id: int, db: Session = Depends(get_db)):
+    """Return the trade execution history associated with a specific order."""
+    order = crud.get_order(db=db, order_id=order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    trades = (
+        db.query(Trade)
+        .filter((Trade.buy_order_id == order_id) | (Trade.sell_order_id == order_id))
+        .order_by(Trade.created_at.asc(), Trade.id.asc())
+        .all()
+    )
+    return [
+        {
+            'trade_id': trade.id,
+            'product_id': trade.product_id,
+            'buy_order_id': trade.buy_order_id,
+            'sell_order_id': trade.sell_order_id,
+            'quantity': trade.quantity,
+            'price': trade.price,
+            'created_at': trade.created_at,
+        }
+        for trade in trades
+    ]
+
+
+@app.get("/products/{product_id}/trades", response_model=list[TradeHistoryEntry], tags=["products"])
+def read_product_trades(product_id: int, db: Session = Depends(get_db)):
+    """Read the execution history for a product without allowing mutation."""
+    product = crud.get_product(db=db, product_id=product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    trades = (
+        db.query(Trade)
+        .filter(Trade.product_id == product_id)
+        .order_by(Trade.created_at.asc(), Trade.id.asc())
+        .all()
+    )
+    return [
+        {
+            'trade_id': trade.id,
+            'product_id': trade.product_id,
+            'buy_order_id': trade.buy_order_id,
+            'sell_order_id': trade.sell_order_id,
+            'quantity': trade.quantity,
+            'price': trade.price,
+            'created_at': trade.created_at,
+        }
+        for trade in trades
+    ]
+
+
 @app.patch("/orders/{order_id}/status", response_model=OrderResponse, tags=["orders"])
 def patch_order_status(order_id: int, status_update: OrderStatusUpdate, db: Session = Depends(get_db)):
     """Update order status following allowed transitions."""
@@ -1383,9 +1449,6 @@ def match_order(
     if order.side not in {'buy', 'sell'}:
         raise HTTPException(status_code=400, detail="Order side must be buy or sell")
 
-    if order.remaining_quantity is None or order.remaining_quantity <= 0:
-        return {"order_id": order.id, "matched_quantity": 0, "trade_count": 0, "status": order.status, "trades": []}
-
     if order.side == 'buy' and order.buyer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
     if order.side == 'sell' and order.seller_id != current_user.id:
@@ -1394,7 +1457,7 @@ def match_order(
     with MATCHING_LOCK:
         db.refresh(order)
         if order.remaining_quantity is None or order.remaining_quantity <= 0:
-            return {"order_id": order.id, "matched_quantity": 0, "trade_count": 0, "status": order.status, "trades": []}
+            raise HTTPException(status_code=409, detail="Order is already filled or has no remaining quantity")
 
         trades = []
         matched_quantity = 0
@@ -1423,8 +1486,8 @@ def match_order(
 
             order.remaining_quantity -= match_qty
             best_candidate.remaining_quantity -= match_qty
-            order.status = 'FILLED' if order.remaining_quantity == 0 else 'PARTIAL'
-            best_candidate.status = 'FILLED' if best_candidate.remaining_quantity == 0 else 'PARTIAL'
+            order.status = _order_status_from_remaining(order)
+            best_candidate.status = _order_status_from_remaining(best_candidate)
             db.add(order)
             db.add(best_candidate)
 
