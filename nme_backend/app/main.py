@@ -625,56 +625,71 @@ def _safe_float(value):
         return 0.0
 
 
-def build_orderbook_snapshot(db: Session | None = None):
-    """Build a read-only snapshot from the existing project data model.
+def _orderbook_side(order: Order) -> str | None:
+    """Resolve the logical order side while preserving compatibility with older rows."""
+    side = (order.side or '').lower()
+    if side in {'buy', 'sell'}:
+        return side
+    if order.buyer_id is not None and order.seller_id is None:
+        return 'buy'
+    if order.seller_id is not None and order.buyer_id is None:
+        return 'sell'
+    return None
 
-    Because the project currently stores no explicit order direction (buy/sell) in
-    the `orders` table, bids are derived from active buyer orders and asks are
-    derived from currently available product listings. This preserves the existing
-    schema and avoids destructive migration work.
-    """
+
+def _is_active_orderbook_order(order: Order) -> bool:
+    """Orderbook sees only active, non-empty, non-filled orders."""
+    if order is None or order.price is None:
+        return False
+    remaining_quantity = order.remaining_quantity if order.remaining_quantity is not None else order.quantity
+    if remaining_quantity is None or remaining_quantity <= 0:
+        return False
+    status = (order.status or '').upper()
+    if status in {'FILLED', 'CANCELLED', 'COMPLETED'}:
+        return False
+    return True
+
+
+def build_orderbook_snapshot(db: Session | None = None):
+    """Build a read-only order book directly from active orders and their remaining quantities."""
     close_db = False
     if db is None:
         db = SessionLocal()
         close_db = True
 
     try:
-        active_order_statuses = {'PENDING', 'ACCEPTED', 'PAID', 'SHIPPED'}
-        bid_levels: dict[float, float] = {}
-        for order in db.query(crud.Order).filter(crud.Order.status.in_(sorted(active_order_statuses))).all():
-            if order.quantity is None or order.price is None:
-                continue
-            quantity = _safe_float(order.quantity)
-            price = _safe_float(order.price)
-            if quantity <= 0 or price <= 0:
-                continue
-            bid_levels[price] = bid_levels.get(price, 0.0) + quantity
+        bids: dict[int, int] = {}
+        asks: dict[int, int] = {}
+        sell_order_product_ids: set[int] = set()
 
-        available_products = db.query(Product).filter(Product.status == 'available').all()
-        ask_levels: dict[float, float] = {}
-        for product in available_products:
-            quantity = _safe_float(product.quantity)
-            price = _safe_float(product.price)
-            if quantity <= 0 or price <= 0:
+        for order in db.query(Order).order_by(Order.price.desc(), Order.created_at.asc(), Order.id.asc()).all():
+            if not _is_active_orderbook_order(order):
                 continue
-            ask_levels[price] = ask_levels.get(price, 0.0) + quantity
+            side = _orderbook_side(order)
+            if side is None:
+                continue
+            remaining_quantity = order.remaining_quantity if order.remaining_quantity is not None else order.quantity
+            if side == 'buy':
+                bids[int(order.price)] = bids.get(int(order.price), 0) + int(remaining_quantity)
+            elif side == 'sell':
+                sell_order_product_ids.add(int(order.product_id))
+                asks[int(order.price)] = asks.get(int(order.price), 0) + int(remaining_quantity)
 
-        bids = [
-            {'price': round(price, 2), 'quantity': round(quantity, 2)}
-            for price, quantity in sorted(bid_levels.items(), reverse=True)
-        ]
-        asks = [
-            {'price': round(price, 2), 'quantity': round(quantity, 2)}
-            for price, quantity in sorted(ask_levels.items())
-        ]
+        for product in db.query(Product).filter(Product.status == 'available').all():
+            if int(product.id) in sell_order_product_ids:
+                continue
+            asks[int(product.price)] = asks.get(int(product.price), 0) + int(product.quantity)
 
-        best_bid = bids[0]['price'] if bids else None
-        best_ask = asks[0]['price'] if asks else None
-        spread = None if best_bid is None or best_ask is None else round(best_ask - best_bid, 2)
+        bid_rows = [{'price': price, 'quantity': qty} for price, qty in sorted(bids.items(), reverse=True)]
+        ask_rows = [{'price': price, 'quantity': qty} for price, qty in sorted(asks.items())]
+
+        best_bid = bid_rows[0]['price'] if bid_rows else None
+        best_ask = ask_rows[0]['price'] if ask_rows else None
+        spread = None if best_bid is None or best_ask is None else int(best_ask - best_bid)
 
         return {
-            'bids': bids,
-            'asks': asks,
+            'bids': bid_rows,
+            'asks': ask_rows,
             'best_bid': best_bid,
             'best_ask': best_ask,
             'spread': spread,
@@ -686,60 +701,39 @@ def build_orderbook_snapshot(db: Session | None = None):
 
 
 def build_trade_snapshot(db: Session | None = None, event_index: int = 0):
-    """Build a single trade payload from existing project data when available.
-
-    We intentionally keep the schema unchanged and avoid any new migration. If
-    real Deal/Order data exists, we surface it as a trade event. Otherwise we use
-    a deterministic, testable mock sequence so the WebSocket always emits a valid
-    payload without randomness.
-    """
+    """Build a single trade payload from the actual Trade table when available."""
     close_db = False
     if db is None:
         db = SessionLocal()
         close_db = True
 
     try:
-        deal = db.query(crud.Deal).order_by(crud.Deal.id.desc()).first()
-        if deal is not None:
-            trade_id = int(deal.id)
-            product_id = int(deal.product_id)
-            price = _safe_float(deal.proposed_price)
-            quantity = _safe_float(deal.quantity)
-            side = 'buy'
-            time = datetime.now(timezone.utc).isoformat()
+        trade = db.query(Trade).order_by(Trade.created_at.desc(), Trade.id.desc()).first()
+        if trade is not None:
+            buy_order = db.query(Order).filter(Order.id == trade.buy_order_id).first()
+            sell_order = db.query(Order).filter(Order.id == trade.sell_order_id).first()
+            if buy_order is not None and buy_order.side == 'buy':
+                side = 'buy'
+            elif sell_order is not None and sell_order.side == 'sell':
+                side = 'sell'
+            else:
+                side = 'buy'
             return {
-                'trade_id': trade_id,
-                'product_id': product_id,
-                'price': round(price, 2),
-                'quantity': round(quantity, 2),
+                'trade_id': int(trade.id),
+                'product_id': int(trade.product_id),
+                'price': float(trade.price),
+                'quantity': float(trade.quantity),
                 'side': side,
-                'time': time,
+                'time': trade.created_at.isoformat() if trade.created_at else datetime.now(timezone.utc).isoformat(),
             }
 
-        order = db.query(crud.Order).order_by(crud.Order.id.desc()).first()
-        if order is not None:
-            trade_id = int(order.id)
-            product_id = int(order.product_id)
-            price = _safe_float(order.price)
-            quantity = _safe_float(order.quantity)
-            side = 'buy'
-            time = datetime.now(timezone.utc).isoformat()
-            return {
-                'trade_id': trade_id,
-                'product_id': product_id,
-                'price': round(price, 2),
-                'quantity': round(quantity, 2),
-                'side': side,
-                'time': time,
-            }
-
-        trade_id = 1000 + event_index
+        fallback_trade_id = 1000 + event_index
         product_id = 1
         price = 2450.5 + (event_index % 10) * 0.75
         quantity = 10.0 + (event_index % 5) * 2.5
         side = 'buy' if event_index % 2 == 0 else 'sell'
         return {
-            'trade_id': trade_id,
+            'trade_id': fallback_trade_id,
             'product_id': product_id,
             'price': round(price, 2),
             'quantity': round(quantity, 2),
