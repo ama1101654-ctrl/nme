@@ -215,8 +215,17 @@ def test_trade_detail_and_product_market_summary(client, seeded_ids):
 
         empty_summary = client.get(f'/products/{other_product_id}/market-summary')
         assert empty_summary.status_code == 200
-        assert empty_summary.json()['trade_count'] == 0
-        assert empty_summary.json()['latest_price'] is None
+        assert empty_summary.json() == {
+            'product_id': other_product_id,
+            'trade_count': 0,
+            'total_quantity': 0,
+            'total_value': 0,
+            'latest_price': None,
+            'high_price': None,
+            'low_price': None,
+            'latest_trade_time': None,
+            'average_price': None,
+        }
 
         trade_a = Trade(product_id=product_id, buy_order_id=101, sell_order_id=201, quantity=40, price=2500)
         trade_b = Trade(product_id=product_id, buy_order_id=102, sell_order_id=202, quantity=20, price=2520)

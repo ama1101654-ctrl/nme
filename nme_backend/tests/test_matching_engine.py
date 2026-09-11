@@ -1,6 +1,8 @@
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Order, Product, Trade
@@ -126,30 +128,29 @@ def test_self_trade_prevented(client, seeded_ids):
     seller = login(client, 'charlie@example.com')
     product_id = seeded_ids['product_id']
 
-    order_response = create_order(
+    sell_response = create_order(
         client,
         seller['access_token'],
         {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 20, 'price': 2500, 'side': 'sell'},
     )
-    assert order_response.status_code == 200
-    order_id = order_response.json()['id']
+    buy_response = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': product_id, 'buyer_id': seeded_ids['seller_id'], 'quantity': 20, 'price': 2600, 'side': 'buy'},
+    )
+    assert sell_response.status_code == 200
+    assert buy_response.status_code == 200
+    buy_order_id = buy_response.json()['id']
 
-    with SessionLocal() as db:
-        order = db.query(Order).filter(Order.id == order_id).first()
-        assert order is not None
-        order.buyer_id = seeded_ids['seller_id']
-        order.side = 'buy'
-        db.add(order)
-        db.commit()
-
-    match_response = client.post(f'/orders/{order_id}/match', headers={'Authorization': f"Bearer {seller['access_token']}"})
+    match_response = client.post(f'/orders/{buy_order_id}/match', headers={'Authorization': f"Bearer {seller['access_token']}"})
     assert match_response.status_code == 200
     assert match_response.json()['trade_count'] == 0
 
     with SessionLocal() as db:
-        refreshed = db.query(Order).filter(Order.id == order_id).first()
-        assert refreshed is not None
-        assert refreshed.remaining_quantity == 20
+        buy_order = db.query(Order).filter(Order.id == buy_order_id).one()
+        sell_order = db.query(Order).filter(Order.id == sell_response.json()['id']).one()
+        assert buy_order.remaining_quantity == 20
+        assert sell_order.remaining_quantity == 20
         assert db.query(Trade).count() == 0
 
 
@@ -192,8 +193,125 @@ def test_fifo_priority_and_multi_trade(client, seeded_ids):
 
     with SessionLocal() as db:
         buy_order = db.query(Order).filter(Order.id == buy_order_id).first()
+        trades = db.query(Trade).filter(Trade.buy_order_id == buy_order_id).order_by(Trade.id.asc()).all()
         assert buy_order is not None and buy_order.remaining_quantity == 0
-        assert db.query(Trade).count() == 3
+        assert len(trades) == 3
+        assert [trade.sell_order_id for trade in trades] == [sell_b.json()['id'], sell_a.json()['id'], sell_c.json()['id']]
+
+
+def test_same_price_fifo_uses_order_id_as_tiebreaker(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    product_id = seeded_ids['product_id']
+
+    sell_a = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 20, 'price': 2400, 'side': 'sell'},
+    )
+    sell_b = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 20, 'price': 2400, 'side': 'sell'},
+    )
+    buy = create_order(
+        client,
+        buyer['access_token'],
+        {'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 20, 'price': 2500, 'side': 'buy'},
+    )
+    assert sell_a.status_code == 200 and sell_b.status_code == 200 and buy.status_code == 200
+
+    response = client.post(
+        f"/orders/{buy.json()['id']}/match",
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert response.status_code == 200
+
+    with SessionLocal() as db:
+        trade = db.query(Trade).filter(Trade.buy_order_id == buy.json()['id']).one()
+        assert trade.sell_order_id == sell_a.json()['id']
+
+
+def test_matching_isolated_by_product(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+
+    with SessionLocal() as db:
+        other_product = Product(
+            seller_id=seeded_ids['seller_id'],
+            metal='Copper',
+            grade='C1020',
+            quantity=100,
+            unit='TON',
+            price=2400,
+            status='available',
+        )
+        db.add(other_product)
+        db.commit()
+        db.refresh(other_product)
+        other_product_id = other_product.id
+
+    sell = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': other_product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 20, 'price': 2400, 'side': 'sell'},
+    )
+    buy = create_order(
+        client,
+        buyer['access_token'],
+        {'product_id': seeded_ids['product_id'], 'buyer_id': seeded_ids['buyer_id'], 'quantity': 20, 'price': 2500, 'side': 'buy'},
+    )
+    assert sell.status_code == 200 and buy.status_code == 200
+
+    response = client.post(
+        f"/orders/{buy.json()['id']}/match",
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert response.status_code == 200
+    assert response.json()['matched_quantity'] == 0
+    assert response.json()['trade_count'] == 0
+
+
+def test_matching_rolls_back_after_trade_flush_failure(client, seeded_ids, monkeypatch):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    product_id = seeded_ids['product_id']
+
+    sell = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 40, 'price': 2400, 'side': 'sell'},
+    )
+    buy = create_order(
+        client,
+        buyer['access_token'],
+        {'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 40, 'price': 2500, 'side': 'buy'},
+    )
+    assert sell.status_code == 200 and buy.status_code == 200
+
+    original_flush = Session.flush
+
+    def fail_after_trade_flush(session, objects=None):
+        has_pending_trade = any(isinstance(item, Trade) for item in session.new)
+        original_flush(session, objects)
+        if has_pending_trade:
+            raise RuntimeError('intentional matching rollback audit failure')
+
+    monkeypatch.setattr(Session, 'flush', fail_after_trade_flush)
+    with pytest.raises(RuntimeError, match='intentional matching rollback audit failure'):
+        client.post(
+            f"/orders/{buy.json()['id']}/match",
+            headers={'Authorization': f"Bearer {buyer['access_token']}"},
+        )
+
+    with SessionLocal() as db:
+        buy_order = db.query(Order).filter(Order.id == buy.json()['id']).one()
+        sell_order = db.query(Order).filter(Order.id == sell.json()['id']).one()
+        assert buy_order.remaining_quantity == 40
+        assert sell_order.remaining_quantity == 40
+        assert buy_order.status == 'PENDING'
+        assert sell_order.status == 'PENDING'
+        assert db.query(Trade).count() == 0
 
 
 def test_concurrent_matching_does_not_overfill(client, seeded_ids):

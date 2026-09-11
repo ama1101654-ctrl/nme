@@ -96,12 +96,20 @@ def test_sell_exact_remaining_inventory(client, seeded_ids):
     seller = login(client, 'charlie@example.com')
     headers = {'Authorization': f"Bearer {seller['access_token']}"}
 
-    exact = client.post(
+    first = client.post(
         '/orders',
-        json={'product_id': seeded_ids['product_id'], 'seller_id': seeded_ids['seller_id'], 'quantity': 100, 'price': 1000, 'side': 'sell'},
+        json={'product_id': seeded_ids['product_id'], 'seller_id': seeded_ids['seller_id'], 'quantity': 60, 'price': 1000, 'side': 'sell'},
         headers=headers,
     )
-    assert exact.status_code == 200
+    second = client.post(
+        '/orders',
+        json={'product_id': seeded_ids['product_id'], 'seller_id': seeded_ids['seller_id'], 'quantity': 40, 'price': 1000, 'side': 'sell'},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert first.json()['remaining_quantity'] == 60
+    assert second.status_code == 200
+    assert second.json()['remaining_quantity'] == 40
 
     with SessionLocal() as db:
         product = db.query(Product).filter(Product.id == seeded_ids['product_id']).first()
@@ -115,6 +123,11 @@ def test_sell_exact_remaining_inventory(client, seeded_ids):
         headers=headers,
     )
     assert over_just_one.status_code == 409
+
+    with SessionLocal() as db:
+        product = db.query(Product).filter(Product.id == seeded_ids['product_id']).first()
+        assert product is not None
+        assert product.reserved_quantity == 100
 
 
 def test_sell_zero_quantity_and_negative_quantity_rejected(client, seeded_ids):
