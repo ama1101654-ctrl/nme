@@ -900,6 +900,9 @@ export default function App(){
   const [realTradeHistory, setRealTradeHistory] = useState([])
   const [realTradeHistoryLoading, setRealTradeHistoryLoading] = useState(false)
   const [realTradeHistoryError, setRealTradeHistoryError] = useState(null)
+  const [selectedTradeDetail, setSelectedTradeDetail] = useState(null)
+  const [tradeDetailLoading, setTradeDetailLoading] = useState(false)
+  const [tradeDetailError, setTradeDetailError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1461,6 +1464,26 @@ export default function App(){
     }
   }
 
+  async function loadTradeDetail(tradeId){
+    setTradeDetailLoading(true)
+    setTradeDetailError(null)
+    setSelectedTradeDetail(null)
+    try{
+      const res = await fetch(API + `/trades/${tradeId}`)
+      if(!res.ok){
+        const j = await res.json().catch(()=>({detail: res.statusText}))
+        setTradeDetailError(res.status === 404 ? '체결 거래를 찾을 수 없습니다.' : (j.detail || '체결 상세를 불러오지 못했습니다.'))
+        return
+      }
+      setSelectedTradeDetail(await res.json())
+    }catch(err){
+      console.error('trade detail error', err)
+      setTradeDetailError('서버와 통신할 수 없습니다.')
+    }finally{
+      setTradeDetailLoading(false)
+    }
+  }
+
   async function loadHistory(forceReload = false){
     if(historyLoading) return
     if(historyLoaded && !forceReload) return
@@ -1579,90 +1602,101 @@ export default function App(){
     if(isAuthGateVisible) return
 
     let socket = null
+    let reconnectTimer = null
     let mounted = true
+    let attempt = 0
 
-    try{
-      socket = new WebSocket(resolveWebSocketUrl())
+    const connect = ()=>{
+      if(!mounted) return
+      setTickerState(prev => ({ ...prev, connectionStatus: 'CONNECTING' }))
+      try{
+        socket = new WebSocket(resolveWebSocketUrl())
 
-      socket.onopen = ()=>{
-        if(!mounted) return
-        setTickerState(prev => ({
-          ...prev,
-          connectionStatus: 'LIVE',
-          notification: prev.notification || { type: 'info', title: 'Market feed connected', detail: 'Real-time ticker online' }
-        }))
-      }
-
-      socket.onmessage = (event)=>{
-        if(!mounted) return
-
-        try{
-          const payload = JSON.parse(event.data)
-          const nextPrice = Number(payload.price)
-          const nextTime = payload.time || new Date().toISOString()
-
-          setTickerState(prev => {
-            const lastPrice = prev.latestPrice ?? nextPrice
-            const priceChange = lastPrice ? nextPrice - lastPrice : 0
-            const priceChangePercent = lastPrice ? (priceChange / lastPrice) * 100 : 0
-            const history = [...prev.history, { price: nextPrice, time: nextTime }].slice(-60)
-            const alertKey = Math.abs(priceChangePercent) >= 5
-              ? `${priceChangePercent >= 0 ? 'surge' : 'drop'}-${priceChangePercent.toFixed(2)}`
-              : null
-
-            let notification = null
-            if(alertKey && alertKey !== tickerAlertLastKeyRef.current){
-              tickerAlertLastKeyRef.current = alertKey
-              notification = {
-                type: priceChangePercent >= 0 ? 'surge' : 'drop',
-                title: priceChangePercent >= 0 ? 'Price Surge' : 'Price Drop',
-                detail: `${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(2)}% • ${formatPrice(nextPrice)} • ${new Date(nextTime).toLocaleTimeString('ko-KR')}`,
-              }
-            }
-
-            return {
-              latestPrice: nextPrice,
-              previousPrice: prev.latestPrice ?? nextPrice,
-              priceChange,
-              priceChangePercent,
-              lastUpdateTime: nextTime,
-              history,
-              connectionStatus: 'LIVE',
-              notification,
-            }
-          })
-        }catch(err){
-          console.error('Ticker payload parse error', err)
+        socket.onopen = ()=>{
+          if(!mounted) return
+          attempt = 0
+          setTickerState(prev => ({
+            ...prev,
+            connectionStatus: 'LIVE',
+            notification: prev.notification || { type: 'info', title: 'Market feed connected', detail: 'Real-time ticker online' }
+          }))
         }
-      }
 
-      socket.onerror = ()=>{
-        if(!mounted) return
+        socket.onmessage = (event)=>{
+          if(!mounted) return
+
+          try{
+            const payload = JSON.parse(event.data)
+            const nextPrice = Number(payload.price)
+            const nextTime = payload.time || new Date().toISOString()
+
+            setTickerState(prev => {
+              const lastPrice = prev.latestPrice ?? nextPrice
+              const priceChange = lastPrice ? nextPrice - lastPrice : 0
+              const priceChangePercent = lastPrice ? (priceChange / lastPrice) * 100 : 0
+              const history = [...prev.history, { price: nextPrice, time: nextTime }].slice(-60)
+              const alertKey = Math.abs(priceChangePercent) >= 5
+                ? `${priceChangePercent >= 0 ? 'surge' : 'drop'}-${priceChangePercent.toFixed(2)}`
+                : null
+
+              let notification = null
+              if(alertKey && alertKey !== tickerAlertLastKeyRef.current){
+                tickerAlertLastKeyRef.current = alertKey
+                notification = {
+                  type: priceChangePercent >= 0 ? 'surge' : 'drop',
+                  title: priceChangePercent >= 0 ? 'Price Surge' : 'Price Drop',
+                  detail: `${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(2)}% • ${formatPrice(nextPrice)} • ${new Date(nextTime).toLocaleTimeString('ko-KR')}`,
+                }
+              }
+
+              return {
+                latestPrice: nextPrice,
+                previousPrice: prev.latestPrice ?? nextPrice,
+                priceChange,
+                priceChangePercent,
+                lastUpdateTime: nextTime,
+                history,
+                connectionStatus: 'LIVE',
+                notification,
+              }
+            })
+          }catch(err){
+            console.error('Ticker payload parse error', err)
+          }
+        }
+
+        socket.onerror = ()=>{
+          if(!mounted) return
+          setTickerState(prev => ({
+            ...prev,
+            connectionStatus: 'ERROR',
+            notification: { type: 'error', title: 'Market feed error', detail: 'WebSocket encountered an error.' },
+          }))
+        }
+
+        socket.onclose = ()=>{
+          if(!mounted) return
+          setTickerState(prev => ({ ...prev, connectionStatus: 'DISCONNECTED' }))
+          const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
+          attempt += 1
+          if(reconnectTimer) clearTimeout(reconnectTimer)
+          reconnectTimer = setTimeout(()=> connect(), delay)
+        }
+      }catch(err){
+        console.error('WebSocket setup error', err)
         setTickerState(prev => ({
           ...prev,
           connectionStatus: 'ERROR',
-          notification: { type: 'error', title: 'Market feed error', detail: 'WebSocket encountered an error.' },
+          notification: { type: 'error', title: 'Connection failed', detail: 'Unable to open the ticker stream.' },
         }))
       }
-
-      socket.onclose = ()=>{
-        if(!mounted) return
-        setTickerState(prev => ({
-          ...prev,
-          connectionStatus: 'DISCONNECTED',
-        }))
-      }
-    }catch(err){
-      console.error('WebSocket setup error', err)
-      setTickerState(prev => ({
-        ...prev,
-        connectionStatus: 'ERROR',
-        notification: { type: 'error', title: 'Connection failed', detail: 'Unable to open the ticker stream.' },
-      }))
     }
+
+    connect()
 
     return ()=>{
       mounted = false
+      if(reconnectTimer) clearTimeout(reconnectTimer)
       if(socket){
         socket.close()
       }
@@ -1831,7 +1865,7 @@ export default function App(){
     setHistoryActionProcessing(true)
 
     try{
-      const res = await fetch(API + `/deals/${item.deal.id}/create-order`, { method: 'POST' })
+      const res = await authFetch(API + `/deals/${item.deal.id}/create-order`, { method: 'POST' })
       if(res.ok){
         setHistoryActionMessage('주문이 생성되었습니다.')
         await loadHistory(true)
@@ -2289,6 +2323,7 @@ export default function App(){
                           <th>가격</th>
                           <th>수량</th>
                           <th>구분</th>
+                          <th>상세</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2299,10 +2334,23 @@ export default function App(){
                             <td>{trade.price != null ? formatPrice(trade.price) : '—'}</td>
                             <td>{trade.quantity != null ? formatTradeQuantity(trade.quantity) : '—'}</td>
                             <td>{trade.side ? formatTradeSide(trade.side) : '—'}</td>
+                            <td><button className="secondary" onClick={()=> loadTradeDetail(trade.trade_id)}>보기</button></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+                {tradeDetailLoading && <div className="info">체결 상세를 불러오는 중...</div>}
+                {!tradeDetailLoading && tradeDetailError && <div className="error-msg">{tradeDetailError}</div>}
+                {!tradeDetailLoading && selectedTradeDetail && (
+                  <div className="detail-section">
+                    <h5>Trade #{selectedTradeDetail.trade_id} 상세</h5>
+                    <div>Product ID: <strong>#{selectedTradeDetail.product_id}</strong></div>
+                    <div>가격: <strong>{formatPrice(selectedTradeDetail.price)}</strong></div>
+                    <div>수량: <strong>{formatTradeQuantity(selectedTradeDetail.quantity)}</strong></div>
+                    <div>구분: <strong>{formatTradeSide(selectedTradeDetail.side)}</strong></div>
+                    <div>체결시간: <strong>{formatDateTime(selectedTradeDetail.time)}</strong></div>
                   </div>
                 )}
               </div>

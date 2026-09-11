@@ -270,6 +270,9 @@ def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_
     expect(seller_page.get_by_text('완료 여부:')).to_be_visible()
     expect(seller_page.get_by_text('YES')).to_be_visible()
 
+    buyer_page.get_by_role('button', name='로그아웃').click()
+    expect(buyer_page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
+
     assert page_errors == []
     assert unexpected_browser_errors == [], f'unexpected browser error responses: {unexpected_browser_errors}'
     assert unexpected_api_errors == [], f'unexpected API error responses: {unexpected_api_errors}'
