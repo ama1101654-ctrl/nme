@@ -1315,6 +1315,17 @@ export default function App(){
       if(refreshed.ok){
         setDirectOrder(await refreshed.json())
       }
+      if(result.trade_count > 0){
+        try{
+          const summaryRes = await fetch(API + `/products/${directOrder.product_id}/market-summary`)
+          if(summaryRes.ok){
+            const summary = await summaryRes.json()
+            setMarketSummaries(current => ({ ...current, [directOrder.product_id]: summary }))
+          }
+        }catch(err){
+          console.warn('Market summary refresh failed', directOrder.product_id, err)
+        }
+      }
       setDirectOrderMessage(result.trade_count > 0
         ? `${result.matched_quantity} 수량이 체결되었습니다.`
         : '현재 조건에 맞는 상대 주문이 없습니다.')

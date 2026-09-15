@@ -291,12 +291,12 @@ def test_browser_direct_buy_sell_match(browser, browser_frontend_url, browser_ba
     seller_card = seller_page.locator('.grid .card').first
     seller_card.get_by_role('button', name='SELL 주문').click()
     expect(seller_page.get_by_role('heading', name='SELL 직접 주문')).to_be_visible()
-    seller_page.get_by_label('직접 주문 수량').fill('3')
+    seller_page.get_by_label('직접 주문 수량').fill('40')
     seller_page.get_by_role('button', name='SELL 주문 생성').click()
     expect(seller_page.get_by_text('SELL 주문과 재고 예약이 생성되었습니다.')).to_be_visible()
     seller_order = seller_page.locator('.proposal .order-room')
     expect(seller_order).to_contain_text('Side: SELL')
-    expect(seller_order).to_contain_text('Remaining: 3')
+    expect(seller_order).to_contain_text('Remaining: 40')
     expect(seller_order).to_contain_text('주문 대기')
 
     seller_page.get_by_label('직접 주문 수량').fill('101')
@@ -314,28 +314,70 @@ def test_browser_direct_buy_sell_match(browser, browser_frontend_url, browser_ba
     buyer_card.get_by_role('button', name='BUY 주문').click()
     buyer_page.get_by_role('button', name='BUY 주문 생성').click()
     expect(buyer_page.get_by_text('수량과 가격은 0보다 커야 합니다.')).to_be_visible()
-    buyer_page.get_by_label('직접 주문 수량').fill('3')
+    buyer_page.get_by_label('직접 주문 수량').fill('100')
     buyer_page.get_by_role('button', name='BUY 주문 생성').click()
     expect(buyer_page.get_by_text('BUY 주문이 생성되었습니다.')).to_be_visible()
 
     buyer_order = buyer_page.locator('.proposal .order-room')
     expect(buyer_order).to_contain_text('Side: BUY')
-    expect(buyer_order).to_contain_text('Quantity: 3')
-    expect(buyer_order).to_contain_text('Remaining: 3')
+    expect(buyer_order).to_contain_text('Quantity: 100')
+    expect(buyer_order).to_contain_text('Remaining: 100')
     buyer_order.get_by_role('button', name='Match').click()
-    expect(buyer_page.get_by_text('3 수량이 체결되었습니다.')).to_be_visible()
-    expect(buyer_order).to_contain_text('Remaining: 0')
-    expect(buyer_order).to_contain_text('Filled: 3')
-    expect(buyer_order).to_contain_text('체결 완료')
+    expect(buyer_page.get_by_text('40 수량이 체결되었습니다.')).to_be_visible()
+    expect(buyer_order).to_contain_text('Remaining: 60')
+    expect(buyer_order).to_contain_text('Filled: 40')
+    expect(buyer_order).to_contain_text('부분 체결')
+
+    expect(buyer_page.locator('.orderbook-panel .orderbook-column').first).to_contain_text('60')
+    expect(buyer_page.locator('.orderbook-panel .orderbook-column').nth(1)).not_to_contain_text('40')
 
     expect(buyer_page.locator('.signal-pill')).to_contain_text('LIVE')
     expect(buyer_page.locator('.orderbook-panel .feed-status-row')).to_contain_text('LIVE')
     expect(buyer_page.locator('.trade-panel .feed-status-row')).to_contain_text('LIVE')
-    expect(buyer_page.locator('.trade-panel .trade-buy').first).to_contain_text('3')
+    expect(buyer_page.locator('.trade-panel .trade-buy').first).to_contain_text('40')
+
+    buyer_page.get_by_role('button', name='거래 이력').click()
+    expect(buyer_page.get_by_role('heading', name='거래 이력')).to_be_visible()
+    buyer_page.get_by_role('button', name='이력 새로고침').click()
+    trade_row = buyer_page.locator('.history-section .trade-table tbody tr').first
+    expect(trade_row).to_contain_text('40')
+    trade_row.get_by_role('button', name='보기').click()
+    trade_detail = buyer_page.locator('.history-section .detail-section')
+    expect(trade_detail.get_by_role('heading', name=re.compile(r'Trade #\d+ 상세'))).to_be_visible()
+    expect(trade_detail).to_contain_text(f"Product ID: #{seeded_ids['product_id']}")
+    expect(trade_detail).to_contain_text('수량: 40')
+    expect(trade_detail).to_contain_text('구분: BUY')
+
+    buyer_page.get_by_role('button', name='Market').click()
+    buyer_card = buyer_page.locator('.grid .card').first
+    expect(buyer_card).to_contain_text('Trade Count: 1')
+    expect(buyer_card).to_contain_text('Total Volume: 40')
+
+    for width, height in [(1440, 900), (1280, 800), (1024, 768)]:
+        buyer_page.set_viewport_size({'width': width, 'height': height})
+        expect(buyer_card.get_by_role('button', name='BUY 주문')).to_be_visible()
+        expect(buyer_card.get_by_role('button', name='SELL 주문')).to_be_visible()
+        has_horizontal_overflow = buyer_page.evaluate(
+            '() => document.documentElement.scrollWidth > document.documentElement.clientWidth'
+        )
+        assert has_horizontal_overflow is False, f'horizontal overflow at {width}x{height}'
+
+    seller_page.get_by_label('직접 주문 수량').fill('60')
+    seller_page.get_by_role('button', name='SELL 주문 생성').click()
+    expect(seller_page.get_by_text('SELL 주문과 재고 예약이 생성되었습니다.')).to_be_visible()
+
+    buyer_order.get_by_role('button', name='Match').click()
+    expect(buyer_page.get_by_text('60 수량이 체결되었습니다.')).to_be_visible()
+    expect(buyer_order).to_contain_text('Remaining: 0')
+    expect(buyer_order).to_contain_text('Filled: 100')
+    expect(buyer_order).to_contain_text('체결 완료')
+    expect(buyer_order.get_by_role('button', name='Match')).to_be_disabled()
+    expect(buyer_card).to_contain_text('Trade Count: 2')
+    expect(buyer_card).to_contain_text('Total Volume: 100')
 
     trade_history = api_fetch(buyer_page, browser_backend_url, '/trades')
     assert trade_history['status'] == 200
-    assert trade_history['data'][0]['quantity'] == 3
+    assert sum(trade['quantity'] for trade in trade_history['data']) == 100
 
     buyer_page.evaluate("""() => {
         window.sessionStorage.setItem('nme_auth_token', 'expired-access-token');
