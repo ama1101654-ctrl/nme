@@ -18,6 +18,10 @@ body{font-family:Inter,Arial,Helvetica,sans-serif;margin:0;background:#fff;color
 .card-foot{margin-top:12px}
 button{background:#0b69ff;color:white;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
 button.secondary{background:#666}
+button:disabled{cursor:not-allowed;opacity:.6}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #f0b429;outline-offset:2px}
+.trade-action.buy{background:#0b69ff}
+.trade-action.sell{background:#b42332}
 .proposal{padding:16px}
 .muted{color:#666;padding:16px}
 .footer{padding:16px;text-align:center;color:#666;border-top:1px solid #eef6ff}
@@ -26,6 +30,10 @@ button.secondary{background:#666}
 .trader-header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .trader-kicker{font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:#0b69ff;font-weight:700}
 .trader-header h2{margin:8px 0 0;color:#082240;font-size:28px}
+.data-source-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.data-source-badge{display:inline-block;padding:3px 7px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.04em}
+.data-source-badge.simulated{background:#fff4d6;color:#714b00;border:1px solid #e8ca78}
+.data-source-note{font-size:12px;color:#596e8d}
 .signal-pill{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid #d9e6ff;background:#edf5ff;color:#0b3b66}
 .signal-pill.live{background:#e7f7ee;border-color:#bde8c8;color:#1a7a42}
 .signal-pill.connecting{background:#edf5ff;border-color:#cfe1ff;color:#0b69ff}
@@ -83,6 +91,12 @@ button.secondary{background:#666}
 /* Deal form */
 .deal-form label{display:block;font-size:13px;color:#0b3b66;margin-bottom:6px}
 .deal-form input{width:100%;padding:8px;border:1px solid #d9e9ff;border-radius:6px}
+.direct-order-form.buy{border-left:4px solid #0b69ff}
+.direct-order-form.sell{border-left:4px solid #b42332}
+.side-badge{display:inline-block;padding:3px 7px;border-radius:4px;color:#fff;font-size:13px;vertical-align:2px}
+.side-badge.buy{background:#0b69ff}
+.side-badge.sell{background:#b42332}
+.order-note{margin-top:10px;padding:8px 10px;border-left:3px solid #8fb8ff;background:#f3f7ff;color:#2f4f75;font-size:13px;line-height:1.5}
 .form-row{margin-top:12px}
 .form-actions{margin-top:12px;display:flex;gap:8px}
 .error-msg{color:#b00;margin-top:6px}

@@ -1299,6 +1299,20 @@ export default function App(){
       setDirectOrderError('수량과 가격은 0보다 커야 합니다.')
       return
     }
+    if(!Number.isInteger(nextQuantity) || !Number.isInteger(nextPrice)){
+      setDirectOrderError('수량과 가격은 정수로 입력해 주세요.')
+      return
+    }
+
+    const sideLabel = formatTradeSide(directOrderSide)
+    const unit = directOrderProduct.unit || 'UNIT'
+    const confirmed = window.confirm(
+      `${sideLabel} 주문을 생성하시겠습니까?\n` +
+      `${directOrderProduct.metal} ${directOrderProduct.grade}\n` +
+      `수량: ${formatTradeQuantity(nextQuantity)} ${unit}\n` +
+      `가격: ${formatPrice(nextPrice)} / ${unit}`
+    )
+    if(!confirmed) return
 
     setDirectOrderSubmitting(true)
     setDirectOrderMessage(null)
@@ -2086,13 +2100,13 @@ export default function App(){
 
             <form className="login-form" onSubmit={handleLoginSubmit}>
               <div className="form-row">
-                <label>Email</label>
-                <input type="email" value={loginEmail} onChange={e=> setLoginEmail(e.target.value)} autoComplete="username" />
+                <label htmlFor="login-email">Email</label>
+                <input id="login-email" type="email" value={loginEmail} onChange={e=> setLoginEmail(e.target.value)} autoComplete="username" />
               </div>
 
               <div className="form-row">
-                <label>Password</label>
-                <input type="password" value={loginPassword} onChange={e=> setLoginPassword(e.target.value)} autoComplete="current-password" />
+                <label htmlFor="login-password">Password</label>
+                <input id="login-password" type="password" value={loginPassword} onChange={e=> setLoginPassword(e.target.value)} autoComplete="current-password" />
               </div>
 
               <div className="form-actions login-actions">
@@ -2143,8 +2157,12 @@ export default function App(){
           <div className="trader-dashboard card">
             <div className="trader-header">
               <div>
-                <div className="trader-kicker">NME REAL-TIME MARKET</div>
+                <div className="trader-kicker">NME TRADING MARKET</div>
                 <h2>Trader Dashboard</h2>
+                <div className="data-source-row">
+                  <span className="data-source-badge simulated">SIMULATED TICKER</span>
+                  <span className="data-source-note">연결 상태와 시세 흐름 검증용 데이터</span>
+                </div>
               </div>
               <div className={`signal-pill ${tickerState.connectionStatus.toLowerCase()}`}>
                 {tickerState.connectionStatus === 'LIVE' ? '● LIVE' : tickerState.connectionStatus === 'CONNECTING' ? '● CONNECTING' : tickerState.connectionStatus === 'RECONNECTING' ? '● RECONNECTING' : tickerState.connectionStatus === 'ERROR' ? '● ERROR' : '● DISCONNECTED'}
@@ -2153,7 +2171,7 @@ export default function App(){
 
             <div className="ticker-grid">
               <div className="ticker-card primary">
-                <div className="ticker-label">Current Price</div>
+                <div className="ticker-label">Simulated Price</div>
                 <div className="ticker-price">{formatPrice(tickerPrice)}</div>
                 <div className={`ticker-change ${tickerChange >= 0 ? 'up' : 'down'}`}>
                   {tickerChange >= 0 ? '+' : ''}{formatPrice(tickerChange)}
@@ -2181,7 +2199,7 @@ export default function App(){
 
             <div className="chart-panel">
               <div className="chart-header">
-                <div>Real-Time Price</div>
+                <div>Simulated Price Trend</div>
                 <div className="chart-meta">Last {tickerHistory.length} ticks</div>
               </div>
               <svg viewBox="0 0 640 180" className="ticker-chart" role="img" aria-label="Real-time price chart">
@@ -2194,16 +2212,16 @@ export default function App(){
 
             <div className="dashboard-lower-grid">
               <div className="mini-panel orderbook-panel">
-                <div className="mini-title">Order Book</div>
+                <div className="mini-title">Order Book · 전체 상품 집계</div>
                 <div className="feed-status-row">
                   <span className={`mini-status ${orderBookConnectionStatus.toLowerCase()}`} />
                   <span>{orderBookConnectionStatus}</span>
                 </div>
                 <div className="orderbook-shell">
                   <div className="orderbook-column">
-                    <div className="orderbook-header">Bids</div>
+                    <div className="orderbook-header">Bids (매수)</div>
                     <div className="orderbook-row orderbook-row-header">
-                      <span>Price</span>
+                      <span>Price (KRW)</span>
                       <span>Qty</span>
                     </div>
                     {(orderBookState.bids.length ? orderBookState.bids.slice(0, 6) : [{ price: null, quantity: null }]).map((row, index) => (
@@ -2215,9 +2233,9 @@ export default function App(){
                   </div>
 
                   <div className="orderbook-column">
-                    <div className="orderbook-header">Asks</div>
+                    <div className="orderbook-header">Asks (매도)</div>
                     <div className="orderbook-row orderbook-row-header">
-                      <span>Price</span>
+                      <span>Price (KRW)</span>
                       <span>Qty</span>
                     </div>
                     {(orderBookState.asks.length ? orderBookState.asks.slice(0, 6) : [{ price: null, quantity: null }]).map((row, index) => (
@@ -2247,7 +2265,8 @@ export default function App(){
               </div>
 
               <div className="mini-panel trade-panel">
-                <div className="mini-title">Trade History</div>
+                <div className="mini-title">Live Trade Feed</div>
+                <div className="data-source-note">실제 체결 우선 · 체결 없음 시 DEMO fallback</div>
                 <div className="feed-status-row">
                   <span className={`mini-status ${tradeConnectionStatus.toLowerCase()}`} />
                   <span>{tradeConnectionStatus}</span>
@@ -2256,6 +2275,8 @@ export default function App(){
                   <table className="trade-table">
                     <thead>
                       <tr>
+                        <th>Trade</th>
+                        <th>Product</th>
                         <th>Time</th>
                         <th>Price</th>
                         <th>Qty</th>
@@ -2265,6 +2286,8 @@ export default function App(){
                     <tbody>
                       {(trades.length ? trades : [{ time: null, price: null, quantity: null, side: null }]).slice(0, 8).map((trade, index) => (
                         <tr key={`${trade.trade_id ?? 'trade'}-${index}`} data-trade-id={trade.trade_id ?? undefined} className={trade.side === 'buy' ? 'trade-buy' : trade.side === 'sell' ? 'trade-sell' : ''}>
+                          <td>{trade.trade_id != null ? `#${trade.trade_id}` : '—'}</td>
+                          <td>{trade.product_id != null ? `#${trade.product_id}` : '—'}</td>
                           <td>{trade.time ? new Date(trade.time).toLocaleTimeString('ko-KR', { hour12: false }) : '—'}</td>
                           <td>{trade.price != null ? formatPrice(trade.price) : '—'}</td>
                           <td>{trade.quantity != null ? formatTradeQuantity(trade.quantity) : '—'}</td>
@@ -2308,22 +2331,23 @@ export default function App(){
                 </div>
                 <div className="card-body">
                   <div>Product ID: <strong>{p.product_id}</strong></div>
-                  <div>Quantity: <strong>{p.quantity} {p.unit}</strong></div>
-                  <div>Price: <strong>{formatPrice(p.price)}</strong></div>
+                  <div>등록 수량: <strong>{p.quantity} {p.unit}</strong></div>
+                  <div>기준 가격: <strong>{formatPrice(p.price)} / {p.unit}</strong></div>
                   <div>Status: <strong>{p.status}</strong></div>
                   <div style={{marginTop:10, paddingTop:8, borderTop:'1px solid #e5eefb'}}>
                     <div style={{fontWeight:700, marginBottom:4}}>Market Summary</div>
                     <div>Trade Count: <strong>{marketSummaries[p.product_id]?.trade_count ?? 0}</strong></div>
-                    <div>Latest: <strong>{marketSummaries[p.product_id]?.latest_price != null ? formatPrice(marketSummaries[p.product_id].latest_price) : '—'}</strong></div>
-                    <div>High/Low: <strong>{marketSummaries[p.product_id]?.high_price != null && marketSummaries[p.product_id]?.low_price != null ? `${formatPrice(marketSummaries[p.product_id].high_price)} / ${formatPrice(marketSummaries[p.product_id].low_price)}` : '—'}</strong></div>
-                    <div>Total Volume: <strong>{marketSummaries[p.product_id]?.total_quantity ?? 0}</strong></div>
+                    <div>Latest Price: <strong>{marketSummaries[p.product_id]?.latest_price != null ? `${formatPrice(marketSummaries[p.product_id].latest_price)} / ${p.unit}` : '—'}</strong></div>
+                    <div>High / Low: <strong>{marketSummaries[p.product_id]?.high_price != null && marketSummaries[p.product_id]?.low_price != null ? `${formatPrice(marketSummaries[p.product_id].high_price)} / ${formatPrice(marketSummaries[p.product_id].low_price)}` : '—'}</strong></div>
+                    <div>Total Volume: <strong>{marketSummaries[p.product_id]?.total_quantity ?? 0} {p.unit}</strong></div>
                     <div>Total Value: <strong>{marketSummaries[p.product_id]?.total_value != null ? formatPrice(marketSummaries[p.product_id].total_value) : '0'}</strong></div>
+                    <div>Average (VWAP): <strong>{marketSummaries[p.product_id]?.average_price != null ? `${formatPrice(marketSummaries[p.product_id].average_price)} / ${p.unit}` : '—'}</strong></div>
                   </div>
                 </div>
                 <div className="card-foot">
                   <button onClick={()=> setSelected(p)}>거래 제안</button>
-                  <button className="secondary" onClick={()=> openDirectOrder(p, 'buy')}>BUY 주문</button>
-                  <button className="secondary" onClick={()=> openDirectOrder(p, 'sell')}>SELL 주문</button>
+                  <button className="trade-action buy" onClick={()=> openDirectOrder(p, 'buy')}>BUY 주문</button>
+                  <button className="trade-action sell" onClick={()=> openDirectOrder(p, 'sell')}>SELL 주문</button>
                 </div>
               </article>
             ))}
@@ -2331,18 +2355,20 @@ export default function App(){
 
           {directOrderProduct && (
             <div className="proposal">
-              <form className="card deal-form" onSubmit={submitDirectOrder}>
-                <h3>{formatTradeSide(directOrderSide)} 직접 주문</h3>
+              <form className={`card deal-form direct-order-form ${directOrderSide}`} onSubmit={submitDirectOrder}>
+                <h3><span className={`side-badge ${directOrderSide}`}>{formatTradeSide(directOrderSide)}</span> 직접 주문</h3>
                 <div>Product: <strong>{directOrderProduct.metal} {directOrderProduct.grade}</strong></div>
                 <div>Product ID: <strong>{directOrderProduct.product_id}</strong></div>
+                <div>등록 수량: <strong>{formatTradeQuantity(directOrderProduct.quantity)} {directOrderProduct.unit}</strong></div>
                 <div className="form-row">
-                  <label>주문 수량</label>
-                  <input aria-label="직접 주문 수량" type="number" value={directOrderQuantity} onChange={e=> setDirectOrderQuantity(e.target.value)} />
+                  <label htmlFor="direct-order-quantity">주문 수량 ({directOrderProduct.unit})</label>
+                  <input id="direct-order-quantity" aria-label="직접 주문 수량" type="number" min="1" step="1" value={directOrderQuantity} onChange={e=> setDirectOrderQuantity(e.target.value)} />
                 </div>
                 <div className="form-row">
-                  <label>주문 가격</label>
-                  <input aria-label="직접 주문 가격" type="number" value={directOrderPrice} onChange={e=> setDirectOrderPrice(e.target.value)} />
+                  <label htmlFor="direct-order-price">주문 가격 (KRW / {directOrderProduct.unit})</label>
+                  <input id="direct-order-price" aria-label="직접 주문 가격" type="number" min="1" step="1" value={directOrderPrice} onChange={e=> setDirectOrderPrice(e.target.value)} />
                 </div>
+                {directOrderSide === 'sell' && <div className="order-note">SELL 주문 수량은 체결 전까지 판매 재고에서 예약됩니다.</div>}
                 <div className="form-actions">
                   <button type="submit" disabled={directOrderSubmitting}>{directOrderSubmitting ? '주문 생성 중...' : `${formatTradeSide(directOrderSide)} 주문 생성`}</button>
                   <button type="button" className="secondary" onClick={()=> setDirectOrderProduct(null)} disabled={directOrderSubmitting}>닫기</button>
@@ -2354,11 +2380,15 @@ export default function App(){
                     <h4>Order #{directOrder.id}</h4>
                     <div>Product ID: <strong>#{directOrder.product_id}</strong></div>
                     <div>Side: <strong>{formatTradeSide(directOrder.side)}</strong></div>
-                    <div>Quantity: <strong>{formatTradeQuantity(directOrder.quantity)}</strong></div>
-                    <div>Remaining: <strong>{formatTradeQuantity(directOrder.remaining_quantity)}</strong></div>
-                    <div>Filled: <strong>{formatTradeQuantity(Number(directOrder.quantity) - Number(directOrder.remaining_quantity || 0))}</strong></div>
-                    <div>Price: <strong>{formatPrice(directOrder.price)}</strong></div>
+                    <div>Quantity (주문): <strong>{formatTradeQuantity(directOrder.quantity)} {directOrderProduct.unit}</strong></div>
+                    <div>Filled (체결): <strong>{formatTradeQuantity(Number(directOrder.quantity) - Number(directOrder.remaining_quantity || 0))} {directOrderProduct.unit}</strong></div>
+                    <div>Remaining (미체결): <strong>{formatTradeQuantity(directOrder.remaining_quantity)} {directOrderProduct.unit}</strong></div>
+                    <div>Price: <strong>{formatPrice(directOrder.price)} / {directOrderProduct.unit}</strong></div>
                     <div>Status: <span className={`status-badge ${getStatusClass(directOrder.status)}`}>{labelOrderStatus(directOrder.status)}</span></div>
+                    <div>Created At: <strong>{formatDateTime(directOrder.created_at)}</strong></div>
+                    {directOrder.status === 'PARTIAL' && (
+                      <div className="order-note">일부 수량이 체결되었습니다. Remaining 수량은 계속 Match할 수 있습니다.</div>
+                    )}
                     <div className="form-actions">
                       <button type="button" onClick={matchDirectOrder} disabled={directOrderMatching || directOrder.remaining_quantity <= 0}>
                         {directOrderMatching ? 'Match 실행 중...' : 'Match'}
@@ -2378,14 +2408,14 @@ export default function App(){
                 <div>Product ID: <strong>{selected.product_id}</strong></div>
 
                 <div className="form-row">
-                  <label>거래 수량</label>
-                  <input type="number" value={quantity} onChange={e=> setQuantity(e.target.value)} />
+                  <label htmlFor="deal-quantity">거래 수량</label>
+                  <input id="deal-quantity" type="number" value={quantity} onChange={e=> setQuantity(e.target.value)} />
                   {formErrors.quantity && <div className="error-msg">{formErrors.quantity}</div>}
                 </div>
 
                 <div className="form-row">
-                  <label>제안 가격</label>
-                  <input type="number" value={proposedPrice} onChange={e=> setProposedPrice(e.target.value)} />
+                  <label htmlFor="deal-price">제안 가격</label>
+                  <input id="deal-price" type="number" value={proposedPrice} onChange={e=> setProposedPrice(e.target.value)} />
                   {formErrors.proposedPrice && <div className="error-msg">{formErrors.proposedPrice}</div>}
                 </div>
 
@@ -2651,6 +2681,7 @@ export default function App(){
               <div className="history-tools">
                 <input
                   className="history-search"
+                  aria-label="거래 이력 검색"
                   placeholder="Deal ID / Product ID 검색"
                   value={historySearch}
                   onChange={e=> setHistorySearch(e.target.value)}
@@ -2659,7 +2690,7 @@ export default function App(){
                 {historySearch && (
                   <button className="secondary" onClick={()=> setHistorySearch('')} disabled={historyLoading}>검색 초기화</button>
                 )}
-                <select className="history-sort" value={historySort} onChange={e=> setHistorySort(e.target.value)} disabled={historyLoading}>
+                <select className="history-sort" aria-label="거래 이력 정렬" value={historySort} onChange={e=> setHistorySort(e.target.value)} disabled={historyLoading}>
                   <option value="CREATED_DESC">최신순</option>
                   <option value="CREATED_ASC">오래된순</option>
                   <option value="PRICE_DESC">가격 높은순</option>
