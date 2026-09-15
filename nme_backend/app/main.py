@@ -881,22 +881,10 @@ def health_check():
     return {"status": "ok"}
 
 
-@app.post("/items", response_model=Item, tags=["items"])
-def create_item(item: ItemCreate, db: Session = Depends(get_db)):
-    """Create an item."""
-    return crud.create_item(db=db, item=item)
-
-
 @app.get("/items", response_model=list[Item], tags=["items"])
 def read_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """Read items."""
     return crud.get_items(db=db, skip=skip, limit=limit)
-
-
-@app.post("/products", response_model=ProductResponse, tags=["products"])
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    """Create a product listing."""
-    return crud.create_product(db=db, product=product)
 
 
 @app.get("/products", response_model=list[ProductResponse], tags=["products"])
@@ -916,9 +904,16 @@ def read_product(product_id: int, db: Session = Depends(get_db)):
 
 @app.post("/users", response_model=UserResponse, tags=["users"])
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    """Create a user."""
+    """Create a public signup user without accepting privileged roles."""
     try:
-        return crud.create_user(db=db, user=user)
+        safe_user = UserCreate(
+            company_name=user.company_name,
+            name=user.name,
+            email=user.email,
+            password=user.password,
+            role='USER',
+        )
+        return crud.create_user(db=db, user=safe_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1035,6 +1030,43 @@ def require_admin_user(current_user: User = Depends(get_current_auth_user)):
     return current_user
 
 
+@app.post("/items", response_model=Item, tags=["items"])
+def create_item(
+    item: ItemCreate,
+    _: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Create an internal item as an administrator."""
+    return crud.create_item(db=db, item=item)
+
+
+@app.post("/products", response_model=ProductResponse, tags=["products"])
+def create_product(
+    product: ProductCreate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create a product listing owned by the authenticated seller."""
+    if str(current_user.role or '').upper() != 'SELLER':
+        raise HTTPException(status_code=403, detail='Seller role required')
+    if product.seller_id != current_user.id:
+        raise HTTPException(status_code=403, detail='Seller id does not match authenticated user')
+    if product.quantity <= 0 or product.price <= 0:
+        raise HTTPException(status_code=400, detail='quantity and price must be > 0')
+
+    safe_product = ProductCreate(
+        seller_id=current_user.id,
+        metal=product.metal,
+        grade=product.grade,
+        quantity=product.quantity,
+        reserved_quantity=0.0,
+        unit=product.unit,
+        price=product.price,
+        status=product.status,
+    )
+    return crud.create_product(db=db, product=safe_product)
+
+
 @app.get("/auth/me", response_model=UserResponse, tags=["auth"])
 def read_auth_me(current_user: User = Depends(get_current_auth_user)):
     """Return the currently authenticated MVP user."""
@@ -1149,14 +1181,12 @@ def create_order(
         raise HTTPException(status_code=404, detail="Product not found")
 
     if side == 'buy':
-        if order.buyer_id is None:
-            raise HTTPException(status_code=400, detail='buyer_id is required for buy orders')
-        if order.buyer_id != current_user.id:
+        if order.buyer_id is not None and order.buyer_id != current_user.id:
             raise HTTPException(status_code=403, detail="Buyer id does not match authenticated user")
-        if order.product_id <= 0 or order.buyer_id <= 0:
-            raise HTTPException(status_code=400, detail="product_id and buyer_id must be > 0")
+        if order.product_id <= 0:
+            raise HTTPException(status_code=400, detail="product_id must be > 0")
 
-        db_user = crud.get_user(db=db, user_id=order.buyer_id)
+        db_user = crud.get_user(db=db, user_id=current_user.id)
         if db_user is None:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -1170,9 +1200,7 @@ def create_order(
         )
         return crud.create_order(db=db, order=safe_order)
 
-    if order.seller_id is None:
-        raise HTTPException(status_code=400, detail='seller_id is required for sell orders')
-    if order.seller_id != current_user.id:
+    if order.seller_id is not None and order.seller_id != current_user.id:
         raise HTTPException(status_code=403, detail="Seller id does not match authenticated user")
     if db_product.seller_id != current_user.id:
         raise HTTPException(status_code=403, detail="Product is not owned by the authenticated seller")
@@ -1293,11 +1321,27 @@ def read_deal(deal_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/deals/{deal_id}/status", response_model=DealResponse, tags=["deals"])
-def patch_deal_status(deal_id: int, status_update: DealStatusUpdate, db: Session = Depends(get_db)):
+def patch_deal_status(
+    deal_id: int,
+    status_update: DealStatusUpdate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
     """Update deal status following allowed transitions."""
     db_deal = crud.get_deal(db=db, deal_id=deal_id)
     if db_deal is None:
         raise HTTPException(status_code=404, detail="Deal not found")
+
+    db_product = crud.get_product(db=db, product_id=db_deal.product_id)
+    if db_product is None:
+        raise HTTPException(status_code=404, detail='Product not found')
+
+    is_buyer = db_deal.buyer_id == current_user.id
+    is_seller = db_product.seller_id == current_user.id
+    if status_update.status in {'AGREED', 'REJECTED'} and not is_seller:
+        raise HTTPException(status_code=403, detail='Only the product seller can approve or reject this deal')
+    if status_update.status == 'CANCELLED' and not (is_buyer or is_seller):
+        raise HTTPException(status_code=403, detail='Only a deal participant can cancel this deal')
 
     try:
         updated = crud.update_deal_status(db=db, deal_id=deal_id, new_status=status_update.status)
@@ -1308,11 +1352,17 @@ def patch_deal_status(deal_id: int, status_update: DealStatusUpdate, db: Session
 
 
 @app.post("/deals/{deal_id}/create-order", response_model=OrderResponse, tags=["deals"])
-def create_order_from_deal_endpoint(deal_id: int, db: Session = Depends(get_db)):
+def create_order_from_deal_endpoint(
+    deal_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
     """Create an Order from an AGREED Deal. Deal remains unchanged."""
     db_deal = crud.get_deal(db=db, deal_id=deal_id)
     if db_deal is None:
         raise HTTPException(status_code=404, detail="Deal not found")
+    if db_deal.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail='Only the deal buyer can create its order')
 
     # Use CRUD helper which encapsulates validations and duplicate prevention
     try:
@@ -1522,12 +1572,19 @@ def read_product_trades(product_id: int, limit: int = 50, skip: int = 0, db: Ses
 
 
 @app.patch("/orders/{order_id}/status", response_model=OrderResponse, tags=["orders"])
-def patch_order_status(order_id: int, status_update: OrderStatusUpdate, db: Session = Depends(get_db)):
+def patch_order_status(
+    order_id: int,
+    status_update: OrderStatusUpdate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
     """Update order status following allowed transitions."""
     # Ensure order exists
     db_order = crud.get_order(db=db, order_id=order_id)
     if db_order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    if current_user.id not in {db_order.buyer_id, db_order.seller_id}:
+        raise HTTPException(status_code=403, detail='Only the order owner can update its status')
 
     try:
         updated = crud.update_order_status(db=db, order_id=order_id, new_status=status_update.status)

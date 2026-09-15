@@ -1,7 +1,11 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
+from jose import jwt
 
 from app.database import SessionLocal
-from app.models import Product
+from app.main import get_jwt_algorithm, get_jwt_secret_key
+from app.models import Order, Product
 
 
 pytestmark = pytest.mark.security
@@ -141,6 +145,203 @@ def test_sell_order_creation_uses_authenticated_seller_identity(client, seeded_i
     assert payload['seller_id'] == seeded_ids['seller_id']
     assert payload['side'] == 'sell'
     assert payload['buyer_id'] is None
+
+
+def test_order_creation_infers_authenticated_identity(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    product_id = seeded_ids['product_id']
+    price = seeded_ids['product_price']
+
+    unauthenticated_sell = client.post(
+        '/orders',
+        json={'product_id': product_id, 'quantity': 1, 'price': price, 'side': 'sell'},
+    )
+    assert unauthenticated_sell.status_code == 401
+
+    buy_response = client.post(
+        '/orders',
+        json={'product_id': product_id, 'quantity': 2, 'price': price, 'side': 'buy'},
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert buy_response.status_code == 200
+    assert buy_response.json()['buyer_id'] == seeded_ids['buyer_id']
+
+    sell_response = client.post(
+        '/orders',
+        json={'product_id': product_id, 'quantity': 3, 'price': price, 'side': 'sell'},
+        headers={'Authorization': f"Bearer {seller['access_token']}"},
+    )
+    assert sell_response.status_code == 200
+    assert sell_response.json()['seller_id'] == seeded_ids['seller_id']
+
+
+def test_deal_and_order_mutations_require_expected_owner(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    admin = login(client, 'alice@example.com')
+    buyer_headers = {'Authorization': f"Bearer {buyer['access_token']}"}
+    seller_headers = {'Authorization': f"Bearer {seller['access_token']}"}
+    admin_headers = {'Authorization': f"Bearer {admin['access_token']}"}
+
+    deal_response = client.post(
+        '/deals',
+        json={
+            'product_id': seeded_ids['product_id'],
+            'buyer_id': seeded_ids['buyer_id'],
+            'quantity': 2,
+            'proposed_price': seeded_ids['product_price'],
+        },
+        headers=buyer_headers,
+    )
+    assert deal_response.status_code == 200
+    deal_id = deal_response.json()['id']
+
+    assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}).status_code == 401
+    assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=admin_headers).status_code == 403
+    assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=buyer_headers).status_code == 403
+
+    agreed = client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=seller_headers)
+    assert agreed.status_code == 200
+
+    assert client.post(f'/deals/{deal_id}/create-order').status_code == 401
+    assert client.post(f'/deals/{deal_id}/create-order', headers=seller_headers).status_code == 403
+
+    order_response = client.post(f'/deals/{deal_id}/create-order', headers=buyer_headers)
+    assert order_response.status_code == 200
+    order_id = order_response.json()['id']
+
+    assert client.patch(f'/orders/{order_id}/status', json={'status': 'ACCEPTED'}).status_code == 401
+    assert client.patch(f'/orders/{order_id}/status', json={'status': 'ACCEPTED'}, headers=seller_headers).status_code == 403
+    accepted = client.patch(f'/orders/{order_id}/status', json={'status': 'ACCEPTED'}, headers=buyer_headers)
+    assert accepted.status_code == 200
+    assert accepted.json()['status'] == 'ACCEPTED'
+
+
+def test_match_requires_authentication_and_order_ownership(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    buyer_headers = {'Authorization': f"Bearer {buyer['access_token']}"}
+    seller_headers = {'Authorization': f"Bearer {seller['access_token']}"}
+    order_payload = {
+        'product_id': seeded_ids['product_id'],
+        'quantity': 5,
+        'price': seeded_ids['product_price'],
+    }
+
+    sell_response = client.post('/orders', json={**order_payload, 'side': 'sell'}, headers=seller_headers)
+    buy_response = client.post('/orders', json={**order_payload, 'side': 'buy'}, headers=buyer_headers)
+    assert sell_response.status_code == 200
+    assert buy_response.status_code == 200
+    buy_order_id = buy_response.json()['id']
+
+    assert client.post(f'/orders/{buy_order_id}/match').status_code == 401
+    assert client.post(f'/orders/{buy_order_id}/match', headers=seller_headers).status_code == 403
+
+    matched = client.post(f'/orders/{buy_order_id}/match', headers=buyer_headers)
+    assert matched.status_code == 200
+    assert matched.json()['matched_quantity'] == 5
+
+    filled_status_change = client.patch(
+        f'/orders/{buy_order_id}/status',
+        json={'status': 'CANCELLED'},
+        headers=buyer_headers,
+    )
+    assert filled_status_change.status_code == 400
+
+    with SessionLocal() as db:
+        filled_order = db.query(Order).filter(Order.id == buy_order_id).one()
+        assert filled_order.status == 'FILLED'
+        assert filled_order.remaining_quantity == 0
+
+
+def test_product_creation_requires_authenticated_seller_identity(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    payload = {
+        'seller_id': seeded_ids['seller_id'],
+        'metal': 'Copper',
+        'grade': 'C1100',
+        'quantity': 10,
+        'unit': 'TON',
+        'price': 1000,
+        'status': 'available',
+    }
+
+    assert client.post('/products', json=payload).status_code == 401
+    assert client.post('/products', json=payload, headers={'Authorization': f"Bearer {buyer['access_token']}"}).status_code == 403
+
+    spoofed = client.post(
+        '/products',
+        json={**payload, 'seller_id': seeded_ids['buyer_id']},
+        headers={'Authorization': f"Bearer {seller['access_token']}"},
+    )
+    assert spoofed.status_code == 403
+
+    created = client.post('/products', json=payload, headers={'Authorization': f"Bearer {seller['access_token']}"})
+    assert created.status_code == 200
+    assert created.json()['seller_id'] == seeded_ids['seller_id']
+
+
+def test_invalid_and_expired_access_tokens_are_rejected(client, seeded_ids):
+    invalid = client.post(
+        '/orders',
+        json={'product_id': seeded_ids['product_id'], 'quantity': 1, 'price': 1000, 'side': 'buy'},
+        headers={'Authorization': 'Bearer invalid-token'},
+    )
+    assert invalid.status_code == 401
+
+    expired_token = jwt.encode(
+        {
+            'sub': str(seeded_ids['buyer_id']),
+            'type': 'access',
+            'exp': datetime.now(timezone.utc) - timedelta(minutes=1),
+        },
+        get_jwt_secret_key(),
+        algorithm=get_jwt_algorithm(),
+    )
+    expired = client.post(
+        '/orders',
+        json={'product_id': seeded_ids['product_id'], 'quantity': 1, 'price': 1000, 'side': 'buy'},
+        headers={'Authorization': f'Bearer {expired_token}'},
+    )
+    assert expired.status_code == 401
+
+
+def test_public_signup_cannot_assign_privileged_role(client):
+    response = client.post(
+        '/users',
+        json={
+            'company_name': 'Example',
+            'name': 'Public User',
+            'email': 'public@example.com',
+            'password': 'secret',
+            'role': 'ADMIN',
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()['role'] == 'USER'
+
+
+def test_item_mutation_requires_admin(client):
+    buyer = login(client, 'bob@example.com')
+    admin = login(client, 'alice@example.com')
+    payload = {'name': 'Audit item', 'description': 'Temporary DB only'}
+
+    assert client.post('/items', json=payload).status_code == 401
+    forbidden = client.post(
+        '/items',
+        json=payload,
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert forbidden.status_code == 403
+
+    created = client.post(
+        '/items',
+        json=payload,
+        headers={'Authorization': f"Bearer {admin['access_token']}"},
+    )
+    assert created.status_code == 200
 
 
 def test_sell_order_validates_side_quantity_and_product_inventory(client, seeded_ids):

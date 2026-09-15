@@ -282,6 +282,8 @@ const DEAL_STATUS_LABEL = {
 
 const ORDER_STATUS_LABEL = {
   PENDING: '주문 대기',
+  PARTIAL: '부분 체결',
+  FILLED: '체결 완료',
   ACCEPTED: '주문 승인',
   PAID: '결제 완료',
   SHIPPED: '배송 완료',
@@ -422,7 +424,17 @@ async function authFetch(url, options = {}, retryOnAuthFailure = true){
     return response
   }
 
-  await refreshAccessToken()
+  try{
+    await refreshAccessToken()
+  }catch(err){
+    clearAuthSessionStorage()
+    AUTH_ME_CACHE.clear()
+    AUTH_ME_PROMISE_CACHE.clear()
+    if(typeof window !== 'undefined'){
+      window.dispatchEvent(new Event('nme-auth-expired'))
+    }
+    throw err
+  }
 
   const retryHeaders = new Headers(options.headers || {})
   const nextToken = readAuthTokenFromStorage()
@@ -855,6 +867,22 @@ function formatTradeQuantity(value){
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric)
 }
 
+function getMutationErrorMessage(status, detail, fallback = '요청을 처리하지 못했습니다.'){
+  const detailText = typeof detail === 'string'
+    ? detail
+    : Array.isArray(detail)
+      ? detail.map(item => item?.msg).filter(Boolean).join(', ')
+      : ''
+
+  if(status === 401) return '로그인이 만료되었습니다. 다시 로그인해 주세요.'
+  if(status === 403) return detailText || '이 작업을 수행할 권한이 없습니다.'
+  if(status === 404) return detailText || '요청한 데이터를 찾을 수 없습니다.'
+  if(status === 409) return detailText || '현재 상태에서는 요청을 처리할 수 없습니다.'
+  if(status === 422) return detailText || '입력값을 확인해 주세요.'
+  if(status >= 500) return '서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.'
+  return detailText || fallback
+}
+
 export default function App(){
   const authenticationContext = resolveAuthenticationContext()
   const currentUserBootstrap = resolveCurrentUserBootstrapContext()
@@ -894,6 +922,15 @@ export default function App(){
   const [orderStatusUpdating, setOrderStatusUpdating] = useState(false)
   const [orderMessage, setOrderMessage] = useState(null)
   const [orderError, setOrderError] = useState(null)
+  const [directOrderProduct, setDirectOrderProduct] = useState(null)
+  const [directOrderSide, setDirectOrderSide] = useState('buy')
+  const [directOrderQuantity, setDirectOrderQuantity] = useState('')
+  const [directOrderPrice, setDirectOrderPrice] = useState('')
+  const [directOrder, setDirectOrder] = useState(null)
+  const [directOrderSubmitting, setDirectOrderSubmitting] = useState(false)
+  const [directOrderMatching, setDirectOrderMatching] = useState(false)
+  const [directOrderMessage, setDirectOrderMessage] = useState(null)
+  const [directOrderError, setDirectOrderError] = useState(null)
 
   // History state for Step 18
   const [historyItems, setHistoryItems] = useState([])
@@ -958,6 +995,18 @@ export default function App(){
     resetAuthCaches()
   }
 
+  useEffect(()=>{
+    function handleAuthExpired(){
+      setBootstrapAccess(false)
+      setLoginError('로그인이 만료되었습니다. 다시 로그인해 주세요.')
+      setCurrentUser(getFallbackCurrentUser(BOOTSTRAP_USER_ID))
+      setAuthSessionVersion(version => version + 1)
+    }
+
+    window.addEventListener('nme-auth-expired', handleAuthExpired)
+    return ()=> window.removeEventListener('nme-auth-expired', handleAuthExpired)
+  }, [])
+
   async function revokeCurrentRefreshToken(){
     const accessToken = readAuthTokenFromStorage()
     const refreshToken = readRefreshTokenFromStorage()
@@ -986,6 +1035,10 @@ export default function App(){
     setOrder(null)
     setOrderError(null)
     setOrderMessage(null)
+    setDirectOrderProduct(null)
+    setDirectOrder(null)
+    setDirectOrderMessage(null)
+    setDirectOrderError(null)
     setHistoryItems([])
     setHistoryLoaded(false)
     setHistoryError(null)
@@ -1191,6 +1244,88 @@ export default function App(){
     return Object.keys(err).length === 0
   }
 
+  function openDirectOrder(product, side){
+    setDirectOrderProduct(product)
+    setDirectOrderSide(side)
+    setDirectOrderQuantity('')
+    setDirectOrderPrice(String(product.price || ''))
+    setDirectOrder(null)
+    setDirectOrderMessage(null)
+    setDirectOrderError(null)
+  }
+
+  async function submitDirectOrder(e){
+    e.preventDefault()
+    if(!directOrderProduct || directOrderSubmitting) return
+
+    const nextQuantity = Number(directOrderQuantity)
+    const nextPrice = Number(directOrderPrice)
+    if(!Number.isFinite(nextQuantity) || nextQuantity <= 0 || !Number.isFinite(nextPrice) || nextPrice <= 0){
+      setDirectOrderError('수량과 가격은 0보다 커야 합니다.')
+      return
+    }
+
+    setDirectOrderSubmitting(true)
+    setDirectOrderMessage(null)
+    setDirectOrderError(null)
+    try{
+      const res = await authFetch(API + '/orders', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          product_id: directOrderProduct.product_id,
+          quantity: nextQuantity,
+          price: nextPrice,
+          side: directOrderSide,
+        })
+      })
+      const data = await res.json().catch(()=>({detail: res.statusText}))
+      if(!res.ok){
+        const message = res.status === 409 && directOrderSide === 'sell'
+          ? '판매 가능 수량을 초과했습니다.'
+          : getMutationErrorMessage(res.status, data.detail, '주문을 생성하지 못했습니다.')
+        setDirectOrderError(message)
+        return
+      }
+
+      setDirectOrder(data)
+      setDirectOrderMessage(directOrderSide === 'sell' ? 'SELL 주문과 재고 예약이 생성되었습니다.' : 'BUY 주문이 생성되었습니다.')
+    }catch(err){
+      console.error('direct order create error', err)
+      setDirectOrderError(err?.status === 401 ? '로그인이 만료되었습니다. 다시 로그인해 주세요.' : '서버와 통신할 수 없습니다.')
+    }finally{
+      setDirectOrderSubmitting(false)
+    }
+  }
+
+  async function matchDirectOrder(){
+    if(!directOrder || directOrderMatching) return
+    setDirectOrderMatching(true)
+    setDirectOrderMessage(null)
+    setDirectOrderError(null)
+    try{
+      const res = await authFetch(API + `/orders/${directOrder.id}/match`, { method: 'POST' })
+      const result = await res.json().catch(()=>({detail: res.statusText}))
+      if(!res.ok){
+        setDirectOrderError(getMutationErrorMessage(res.status, result.detail, 'Match를 실행하지 못했습니다.'))
+        return
+      }
+
+      const refreshed = await authFetch(API + `/orders/${directOrder.id}`)
+      if(refreshed.ok){
+        setDirectOrder(await refreshed.json())
+      }
+      setDirectOrderMessage(result.trade_count > 0
+        ? `${result.matched_quantity} 수량이 체결되었습니다.`
+        : '현재 조건에 맞는 상대 주문이 없습니다.')
+    }catch(err){
+      console.error('direct order match error', err)
+      setDirectOrderError(err?.status === 401 ? '로그인이 만료되었습니다. 다시 로그인해 주세요.' : '서버와 통신할 수 없습니다.')
+    }finally{
+      setDirectOrderMatching(false)
+    }
+  }
+
   async function handleSubmit(e){
     e.preventDefault()
     setDealError(null)
@@ -1220,9 +1355,7 @@ export default function App(){
         alert('거래 제안이 등록되었습니다. Deal Room으로 이동합니다.')
       }else{
         const j = await res.json().catch(()=>({detail: res.statusText}))
-        if(res.status === 404) setDealError('상품 또는 구매자를 찾을 수 없습니다.')
-        else if(res.status === 400) setDealError(j.detail || '거래 제안을 등록할 수 없습니다.')
-        else setDealError('서버와 통신할 수 없습니다.')
+        setDealError(getMutationErrorMessage(res.status, j.detail, '거래 제안을 등록할 수 없습니다.'))
         console.error('Deal create error', res.status, j)
       }
     }catch(err){
@@ -1276,9 +1409,7 @@ export default function App(){
         setStatusMessage(msg)
       }else{
         const j = await res.json().catch(()=>({detail: res.statusText}))
-        if(res.status === 404) setDealError('Deal을 찾을 수 없습니다.')
-        else if(res.status === 400) setDealError(j.detail || '상태 변경에 실패했습니다.')
-        else setDealError('서버와 통신할 수 없습니다.')
+        setDealError(getMutationErrorMessage(res.status, j.detail, '상태 변경에 실패했습니다.'))
         console.error('status update error', res.status, j)
       }
     }catch(err){
@@ -1353,17 +1484,7 @@ export default function App(){
         return
       }
 
-      if(res.status === 404){
-        setOrderError(detail || 'Deal을 찾을 수 없습니다.')
-        return
-      }
-
-      if(res.status === 400){
-        setOrderError(detail || '주문 생성 요청이 올바르지 않습니다.')
-        return
-      }
-
-      setOrderError(detail || '주문 생성에 실패했습니다.')
+      setOrderError(getMutationErrorMessage(res.status, detail, '주문 생성에 실패했습니다.'))
     }catch(err){
       console.error('createOrderFromDeal error', err)
       setOrderError('서버와 통신할 수 없습니다.')
@@ -1398,13 +1519,7 @@ export default function App(){
       }
 
       const j = await res.json().catch(()=>({detail: res.statusText}))
-      if(res.status === 404){
-        setOrderError('주문을 찾을 수 없습니다.')
-      }else if(res.status === 400){
-        setOrderError(j.detail || '주문 상태 변경에 실패했습니다.')
-      }else{
-        setOrderError('주문 상태를 변경하지 못했습니다.')
-      }
+      setOrderError(getMutationErrorMessage(res.status, j.detail, '주문 상태를 변경하지 못했습니다.'))
       console.error('order status update error', res.status, j)
     }catch(err){
       console.error('updateOrderStatus network error', err)
@@ -2155,10 +2270,53 @@ export default function App(){
                 </div>
                 <div className="card-foot">
                   <button onClick={()=> setSelected(p)}>거래 제안</button>
+                  <button className="secondary" onClick={()=> openDirectOrder(p, 'buy')}>BUY 주문</button>
+                  <button className="secondary" onClick={()=> openDirectOrder(p, 'sell')}>SELL 주문</button>
                 </div>
               </article>
             ))}
           </div>
+
+          {directOrderProduct && (
+            <div className="proposal">
+              <form className="card deal-form" onSubmit={submitDirectOrder}>
+                <h3>{formatTradeSide(directOrderSide)} 직접 주문</h3>
+                <div>Product: <strong>{directOrderProduct.metal} {directOrderProduct.grade}</strong></div>
+                <div>Product ID: <strong>{directOrderProduct.product_id}</strong></div>
+                <div className="form-row">
+                  <label>주문 수량</label>
+                  <input aria-label="직접 주문 수량" type="number" value={directOrderQuantity} onChange={e=> setDirectOrderQuantity(e.target.value)} />
+                </div>
+                <div className="form-row">
+                  <label>주문 가격</label>
+                  <input aria-label="직접 주문 가격" type="number" value={directOrderPrice} onChange={e=> setDirectOrderPrice(e.target.value)} />
+                </div>
+                <div className="form-actions">
+                  <button type="submit" disabled={directOrderSubmitting}>{directOrderSubmitting ? '주문 생성 중...' : `${formatTradeSide(directOrderSide)} 주문 생성`}</button>
+                  <button type="button" className="secondary" onClick={()=> setDirectOrderProduct(null)} disabled={directOrderSubmitting}>닫기</button>
+                </div>
+                {directOrderMessage && <div className="success-msg">{directOrderMessage}</div>}
+                {directOrderError && <div className="error-msg">{directOrderError}</div>}
+                {directOrder && (
+                  <div className="order-room">
+                    <h4>Order #{directOrder.id}</h4>
+                    <div>Product ID: <strong>#{directOrder.product_id}</strong></div>
+                    <div>Side: <strong>{formatTradeSide(directOrder.side)}</strong></div>
+                    <div>Quantity: <strong>{formatTradeQuantity(directOrder.quantity)}</strong></div>
+                    <div>Remaining: <strong>{formatTradeQuantity(directOrder.remaining_quantity)}</strong></div>
+                    <div>Filled: <strong>{formatTradeQuantity(Number(directOrder.quantity) - Number(directOrder.remaining_quantity || 0))}</strong></div>
+                    <div>Price: <strong>{formatPrice(directOrder.price)}</strong></div>
+                    <div>Status: <span className={`status-badge ${getStatusClass(directOrder.status)}`}>{labelOrderStatus(directOrder.status)}</span></div>
+                    <div className="form-actions">
+                      <button type="button" onClick={matchDirectOrder} disabled={directOrderMatching || directOrder.remaining_quantity <= 0}>
+                        {directOrderMatching ? 'Match 실행 중...' : 'Match'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </form>
+            </div>
+          )}
 
           <div className="proposal">
             {selected ? (

@@ -278,3 +278,70 @@ def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_
     assert unexpected_api_errors == [], f'unexpected API error responses: {unexpected_api_errors}'
     assert filtered_console_errors == [], f'console errors: {console_errors}; browser error responses: {browser_error_responses}'
     assert request_failures == []
+
+
+def test_browser_direct_buy_sell_match(browser, browser_frontend_url, browser_backend_url, seeded_ids):
+    buyer_context = browser.new_context()
+    seller_context = browser.new_context()
+    buyer_page = buyer_context.new_page()
+    seller_page = seller_context.new_page()
+
+    seller_user = login_user(seller_page, browser_frontend_url, browser_backend_url, 'charlie@example.com')
+    assert seller_user['role'] == 'SELLER'
+    seller_card = seller_page.locator('.grid .card').first
+    seller_card.get_by_role('button', name='SELL 주문').click()
+    expect(seller_page.get_by_role('heading', name='SELL 직접 주문')).to_be_visible()
+    seller_page.get_by_label('직접 주문 수량').fill('3')
+    seller_page.get_by_role('button', name='SELL 주문 생성').click()
+    expect(seller_page.get_by_text('SELL 주문과 재고 예약이 생성되었습니다.')).to_be_visible()
+    seller_order = seller_page.locator('.proposal .order-room')
+    expect(seller_order).to_contain_text('Side: SELL')
+    expect(seller_order).to_contain_text('Remaining: 3')
+    expect(seller_order).to_contain_text('주문 대기')
+
+    seller_page.get_by_label('직접 주문 수량').fill('101')
+    seller_page.get_by_role('button', name='SELL 주문 생성').click()
+    expect(seller_page.get_by_text('판매 가능 수량을 초과했습니다.')).to_be_visible()
+
+    buyer_user = login_user(buyer_page, browser_frontend_url, browser_backend_url, 'bob@example.com')
+    assert buyer_user['role'] == 'BUYER'
+    buyer_card = buyer_page.locator('.grid .card').first
+    buyer_card.get_by_role('button', name='SELL 주문').click()
+    buyer_page.get_by_label('직접 주문 수량').fill('1')
+    buyer_page.get_by_role('button', name='SELL 주문 생성').click()
+    expect(buyer_page.get_by_text('Product is not owned by the authenticated seller')).to_be_visible()
+
+    buyer_card.get_by_role('button', name='BUY 주문').click()
+    buyer_page.get_by_role('button', name='BUY 주문 생성').click()
+    expect(buyer_page.get_by_text('수량과 가격은 0보다 커야 합니다.')).to_be_visible()
+    buyer_page.get_by_label('직접 주문 수량').fill('3')
+    buyer_page.get_by_role('button', name='BUY 주문 생성').click()
+    expect(buyer_page.get_by_text('BUY 주문이 생성되었습니다.')).to_be_visible()
+
+    buyer_order = buyer_page.locator('.proposal .order-room')
+    expect(buyer_order).to_contain_text('Side: BUY')
+    expect(buyer_order).to_contain_text('Quantity: 3')
+    expect(buyer_order).to_contain_text('Remaining: 3')
+    buyer_order.get_by_role('button', name='Match').click()
+    expect(buyer_page.get_by_text('3 수량이 체결되었습니다.')).to_be_visible()
+    expect(buyer_order).to_contain_text('Remaining: 0')
+    expect(buyer_order).to_contain_text('Filled: 3')
+    expect(buyer_order).to_contain_text('체결 완료')
+
+    expect(buyer_page.locator('.signal-pill')).to_contain_text('LIVE')
+    expect(buyer_page.locator('.orderbook-panel .feed-status-row')).to_contain_text('LIVE')
+    expect(buyer_page.locator('.trade-panel .feed-status-row')).to_contain_text('LIVE')
+    expect(buyer_page.locator('.trade-panel .trade-buy').first).to_contain_text('3')
+
+    trade_history = api_fetch(buyer_page, browser_backend_url, '/trades')
+    assert trade_history['status'] == 200
+    assert trade_history['data'][0]['quantity'] == 3
+
+    buyer_page.evaluate("""() => {
+        window.sessionStorage.setItem('nme_auth_token', 'expired-access-token');
+        window.sessionStorage.setItem('nme_refresh_token', 'expired-refresh-token');
+    }""")
+    buyer_page.get_by_label('직접 주문 수량').fill('1')
+    buyer_page.get_by_role('button', name='BUY 주문 생성').click()
+    expect(buyer_page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
+    expect(buyer_page.get_by_text('로그인이 만료되었습니다. 다시 로그인해 주세요.')).to_be_visible()
