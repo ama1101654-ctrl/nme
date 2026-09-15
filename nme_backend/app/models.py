@@ -1,5 +1,5 @@
 from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 
 from .database import Base
 from .password_security import PASSWORD_DISABLED_VALUE, hash_password
@@ -127,6 +127,65 @@ class InvestorProfile(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="investor_profile")
+
+
+class MetalMaster(Base):
+    """Canonical metal reference data independent of product listings."""
+
+    __tablename__ = "metal_masters"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_metal_masters_code"),
+        CheckConstraint("TRIM(code) <> ''", name="ck_metal_masters_code_not_blank"),
+        CheckConstraint("code = UPPER(code)", name="ck_metal_masters_code_uppercase"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_metal_masters_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    grades = relationship("MetalGradeMaster", back_populates="metal")
+
+    @validates("code")
+    def normalize_code(self, _, value):
+        normalized = str(value or "").strip().upper()
+        if not normalized:
+            raise ValueError("Metal code is required")
+        return normalized
+
+
+class MetalGradeMaster(Base):
+    """Canonical grade reference data scoped to a metal master."""
+
+    __tablename__ = "metal_grade_masters"
+    __table_args__ = (
+        UniqueConstraint("metal_id", "code", name="uq_metal_grade_masters_metal_code"),
+        CheckConstraint("TRIM(code) <> ''", name="ck_metal_grade_masters_code_not_blank"),
+        CheckConstraint("code = UPPER(code)", name="ck_metal_grade_masters_code_uppercase"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_metal_grade_masters_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    metal_id = Column(Integer, ForeignKey("metal_masters.id"), nullable=False, index=True)
+    code = Column(String(50), nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    metal = relationship("MetalMaster", back_populates="grades")
+
+    @validates("code")
+    def normalize_code(self, _, value):
+        normalized = str(value or "").strip().upper()
+        if not normalized:
+            raise ValueError("Grade code is required")
+        return normalized
 
 
 class AuthSession(Base):

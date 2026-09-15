@@ -39,6 +39,8 @@ from .schemas import (
     TradeHistoryEntry,
     TradeResponse,
     MarketSummaryResponse,
+    MetalGradeMasterResponse,
+    MetalMasterResponse,
 )
 from .schemas import OrderStatusUpdate
 from .schemas import MarketResponse
@@ -903,6 +905,38 @@ def read_product(product_id: int, db: Session = Depends(get_db)):
     if db_product is None:
         raise HTTPException(status_code=404, detail="Product not found")
     return db_product
+
+
+@app.get("/masters/metals", response_model=list[MetalMasterResponse], tags=["masters"])
+def read_metal_masters(db: Session = Depends(get_db)):
+    """Read canonical metal reference data without affecting listings."""
+    return crud.get_metal_masters(db=db)
+
+
+@app.get("/masters/metals/{metal_id}", response_model=MetalMasterResponse, tags=["masters"])
+def read_metal_master(metal_id: int, db: Session = Depends(get_db)):
+    """Read one canonical metal reference entry."""
+    metal = crud.get_metal_master(db=db, metal_id=metal_id)
+    if metal is None:
+        raise HTTPException(status_code=404, detail="Metal master not found")
+    return metal
+
+
+@app.get("/masters/metals/{metal_id}/grades", response_model=list[MetalGradeMasterResponse], tags=["masters"])
+def read_metal_grades(metal_id: int, db: Session = Depends(get_db)):
+    """Read grade reference data belonging to one metal."""
+    if crud.get_metal_master(db=db, metal_id=metal_id) is None:
+        raise HTTPException(status_code=404, detail="Metal master not found")
+    return crud.get_grades_by_metal(db=db, metal_id=metal_id)
+
+
+@app.get("/masters/grades/{grade_id}", response_model=MetalGradeMasterResponse, tags=["masters"])
+def read_metal_grade(grade_id: int, db: Session = Depends(get_db)):
+    """Read one canonical metal grade reference entry."""
+    grade = crud.get_grade_master(db=db, grade_id=grade_id)
+    if grade is None:
+        raise HTTPException(status_code=404, detail="Metal grade master not found")
+    return grade
 
 
 @app.post("/users", response_model=UserResponse, tags=["users"])

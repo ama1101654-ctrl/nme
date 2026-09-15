@@ -135,6 +135,31 @@ class ProductResponse(ProductCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MetalMasterResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None = None
+    status: Literal["ACTIVE", "INACTIVE"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetalGradeMasterResponse(BaseModel):
+    id: int
+    metal_id: int
+    code: str
+    name: str
+    description: str | None = None
+    status: Literal["ACTIVE", "INACTIVE"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OrderCreate(BaseModel):
     """Schema used when creating a new Order.
 

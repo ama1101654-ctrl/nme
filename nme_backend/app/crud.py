@@ -4,7 +4,7 @@ from sqlalchemy import or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, CompanyMember, Deal, InvestorProfile, Item, MemberProfile, Order, Product, User
+from .models import AuthSession, CompanyMember, Deal, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, User
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -49,6 +49,31 @@ def get_products(db: Session, skip: int = 0, limit: int = 100):
 def get_product(db: Session, product_id: int):
     """Return a product by id."""
     return db.query(Product).filter(Product.id == product_id).first()
+
+
+def get_metal_masters(db: Session):
+    """Return all metal masters, including inactive historical values."""
+    return db.query(MetalMaster).order_by(MetalMaster.code.asc()).all()
+
+
+def get_metal_master(db: Session, metal_id: int):
+    """Return a metal master by id."""
+    return db.query(MetalMaster).filter(MetalMaster.id == metal_id).first()
+
+
+def get_grades_by_metal(db: Session, metal_id: int):
+    """Return all grade masters for one metal, including inactive values."""
+    return (
+        db.query(MetalGradeMaster)
+        .filter(MetalGradeMaster.metal_id == metal_id)
+        .order_by(MetalGradeMaster.code.asc())
+        .all()
+    )
+
+
+def get_grade_master(db: Session, grade_id: int):
+    """Return a grade master by id."""
+    return db.query(MetalGradeMaster).filter(MetalGradeMaster.id == grade_id).first()
 
 
 def create_user(db: Session, user: UserCreate) -> User:
