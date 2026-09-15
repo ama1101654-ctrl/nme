@@ -854,6 +854,41 @@ function resolveTradeSocketUrl(){
   return resolveSocketUrl('/ws/trades')
 }
 
+function isSocketTimestamp(value){
+  return typeof value === 'string' && value.length > 0 && Number.isFinite(Date.parse(value))
+}
+
+function isTickerPayload(payload){
+  return payload !== null && typeof payload === 'object' &&
+    Number.isFinite(payload.price) && isSocketTimestamp(payload.time)
+}
+
+function isOrderBookLevel(level){
+  return level !== null && typeof level === 'object' &&
+    Number.isFinite(level.price) && Number.isFinite(level.quantity) && level.quantity > 0
+}
+
+function isNullableFiniteNumber(value){
+  return value === null || Number.isFinite(value)
+}
+
+function isOrderBookPayload(payload){
+  return payload !== null && typeof payload === 'object' &&
+    Array.isArray(payload.bids) && payload.bids.every(isOrderBookLevel) &&
+    Array.isArray(payload.asks) && payload.asks.every(isOrderBookLevel) &&
+    isNullableFiniteNumber(payload.best_bid) &&
+    isNullableFiniteNumber(payload.best_ask) &&
+    isNullableFiniteNumber(payload.spread) &&
+    isSocketTimestamp(payload.time)
+}
+
+function isTradePayload(payload){
+  return payload !== null && typeof payload === 'object' &&
+    Number.isInteger(payload.trade_id) && Number.isInteger(payload.product_id) &&
+    Number.isFinite(payload.price) && Number.isFinite(payload.quantity) && payload.quantity > 0 &&
+    (payload.side === 'buy' || payload.side === 'sell') && isSocketTimestamp(payload.time)
+}
+
 function formatTradeSide(side){
   const normalized = String(side || '').toLowerCase()
   if(normalized === 'buy') return 'BUY'
@@ -1732,14 +1767,15 @@ export default function App(){
     let mounted = true
     let attempt = 0
 
-    const connect = ()=>{
+    const connect = (isReconnect = false)=>{
       if(!mounted) return
-      setTickerState(prev => ({ ...prev, connectionStatus: 'CONNECTING' }))
+      setTickerState(prev => ({ ...prev, connectionStatus: isReconnect ? 'RECONNECTING' : 'CONNECTING' }))
       try{
-        socket = new WebSocket(resolveWebSocketUrl())
+        const nextSocket = new WebSocket(resolveWebSocketUrl())
+        socket = nextSocket
 
-        socket.onopen = ()=>{
-          if(!mounted) return
+        nextSocket.onopen = ()=>{
+          if(!mounted || socket !== nextSocket) return
           attempt = 0
           setTickerState(prev => ({
             ...prev,
@@ -1748,13 +1784,14 @@ export default function App(){
           }))
         }
 
-        socket.onmessage = (event)=>{
-          if(!mounted) return
+        nextSocket.onmessage = (event)=>{
+          if(!mounted || socket !== nextSocket) return
 
           try{
             const payload = JSON.parse(event.data)
-            const nextPrice = Number(payload.price)
-            const nextTime = payload.time || new Date().toISOString()
+            if(!isTickerPayload(payload)) return
+            const nextPrice = payload.price
+            const nextTime = payload.time
 
             setTickerState(prev => {
               const lastPrice = prev.latestPrice ?? nextPrice
@@ -1787,12 +1824,12 @@ export default function App(){
               }
             })
           }catch(err){
-            console.error('Ticker payload parse error', err)
+            console.warn('Ticker payload parse error', err)
           }
         }
 
-        socket.onerror = ()=>{
-          if(!mounted) return
+        nextSocket.onerror = ()=>{
+          if(!mounted || socket !== nextSocket) return
           setTickerState(prev => ({
             ...prev,
             connectionStatus: 'ERROR',
@@ -1800,13 +1837,13 @@ export default function App(){
           }))
         }
 
-        socket.onclose = ()=>{
-          if(!mounted) return
+        nextSocket.onclose = ()=>{
+          if(!mounted || socket !== nextSocket) return
           setTickerState(prev => ({ ...prev, connectionStatus: 'DISCONNECTED' }))
           const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
           attempt += 1
           if(reconnectTimer) clearTimeout(reconnectTimer)
-          reconnectTimer = setTimeout(()=> connect(), delay)
+          reconnectTimer = setTimeout(()=> connect(true), delay)
         }
       }catch(err){
         console.error('WebSocket setup error', err)
@@ -1837,21 +1874,23 @@ export default function App(){
     let mounted = true
     let attempt = 0
 
-    const connect = ()=>{
+    const connect = (isReconnect = false)=>{
       if(!mounted) return
-      setOrderBookConnectionStatus('CONNECTING')
-      socket = new WebSocket(resolveOrderBookSocketUrl())
+      setOrderBookConnectionStatus(isReconnect ? 'RECONNECTING' : 'CONNECTING')
+      const nextSocket = new WebSocket(resolveOrderBookSocketUrl())
+      socket = nextSocket
 
-      socket.onopen = ()=>{
-        if(!mounted) return
+      nextSocket.onopen = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setOrderBookConnectionStatus('LIVE')
         attempt = 0
       }
 
-      socket.onmessage = (event)=>{
+      nextSocket.onmessage = (event)=>{
+        if(!mounted || socket !== nextSocket) return
         try{
           const payload = JSON.parse(event.data)
-          if(!payload || typeof payload !== 'object') return
+          if(!isOrderBookPayload(payload)) return
           setOrderBookState({
             bids: Array.isArray(payload.bids) ? payload.bids : [],
             asks: Array.isArray(payload.asks) ? payload.asks : [],
@@ -1866,18 +1905,18 @@ export default function App(){
         }
       }
 
-      socket.onerror = ()=>{
-        if(!mounted) return
+      nextSocket.onerror = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setOrderBookConnectionStatus('ERROR')
       }
 
-      socket.onclose = ()=>{
-        if(!mounted) return
+      nextSocket.onclose = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setOrderBookConnectionStatus('DISCONNECTED')
         const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
         attempt += 1
         if(reconnectTimer) clearTimeout(reconnectTimer)
-        reconnectTimer = setTimeout(()=> connect(), delay)
+        reconnectTimer = setTimeout(()=> connect(true), delay)
       }
     }
 
@@ -1898,21 +1937,23 @@ export default function App(){
     let mounted = true
     let attempt = 0
 
-    const connect = ()=>{
+    const connect = (isReconnect = false)=>{
       if(!mounted) return
-      setTradeConnectionStatus('CONNECTING')
-      socket = new WebSocket(resolveTradeSocketUrl())
+      setTradeConnectionStatus(isReconnect ? 'RECONNECTING' : 'CONNECTING')
+      const nextSocket = new WebSocket(resolveTradeSocketUrl())
+      socket = nextSocket
 
-      socket.onopen = ()=>{
-        if(!mounted) return
+      nextSocket.onopen = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setTradeConnectionStatus('LIVE')
         attempt = 0
       }
 
-      socket.onmessage = (event)=>{
+      nextSocket.onmessage = (event)=>{
+        if(!mounted || socket !== nextSocket) return
         try{
           const payload = JSON.parse(event.data)
-          if(!payload || typeof payload !== 'object') return
+          if(!isTradePayload(payload)) return
 
           const trade = {
             ...payload,
@@ -1926,18 +1967,18 @@ export default function App(){
         }
       }
 
-      socket.onerror = ()=>{
-        if(!mounted) return
+      nextSocket.onerror = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setTradeConnectionStatus('ERROR')
       }
 
-      socket.onclose = ()=>{
-        if(!mounted) return
+      nextSocket.onclose = ()=>{
+        if(!mounted || socket !== nextSocket) return
         setTradeConnectionStatus('DISCONNECTED')
         const delay = attempt < 1 ? 1000 : attempt < 2 ? 2000 : 5000
         attempt += 1
         if(reconnectTimer) clearTimeout(reconnectTimer)
-        reconnectTimer = setTimeout(()=> connect(), delay)
+        reconnectTimer = setTimeout(()=> connect(true), delay)
       }
     }
 
@@ -2106,7 +2147,7 @@ export default function App(){
                 <h2>Trader Dashboard</h2>
               </div>
               <div className={`signal-pill ${tickerState.connectionStatus.toLowerCase()}`}>
-                {tickerState.connectionStatus === 'LIVE' ? '● LIVE' : tickerState.connectionStatus === 'CONNECTING' ? '● CONNECTING' : tickerState.connectionStatus === 'ERROR' ? '● ERROR' : '● DISCONNECTED'}
+                {tickerState.connectionStatus === 'LIVE' ? '● LIVE' : tickerState.connectionStatus === 'CONNECTING' ? '● CONNECTING' : tickerState.connectionStatus === 'RECONNECTING' ? '● RECONNECTING' : tickerState.connectionStatus === 'ERROR' ? '● ERROR' : '● DISCONNECTED'}
               </div>
             </div>
 
@@ -2223,7 +2264,7 @@ export default function App(){
                     </thead>
                     <tbody>
                       {(trades.length ? trades : [{ time: null, price: null, quantity: null, side: null }]).slice(0, 8).map((trade, index) => (
-                        <tr key={`${trade.trade_id ?? 'trade'}-${index}`} className={trade.side === 'buy' ? 'trade-buy' : trade.side === 'sell' ? 'trade-sell' : ''}>
+                        <tr key={`${trade.trade_id ?? 'trade'}-${index}`} data-trade-id={trade.trade_id ?? undefined} className={trade.side === 'buy' ? 'trade-buy' : trade.side === 'sell' ? 'trade-sell' : ''}>
                           <td>{trade.time ? new Date(trade.time).toLocaleTimeString('ko-KR', { hour12: false }) : '—'}</td>
                           <td>{trade.price != null ? formatPrice(trade.price) : '—'}</td>
                           <td>{trade.quantity != null ? formatTradeQuantity(trade.quantity) : '—'}</td>

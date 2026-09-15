@@ -91,6 +91,77 @@ def save_screenshot(page, screenshot_dir: Path, name: str):
     page.screenshot(path=str(screenshot_dir / name), full_page=True)
 
 
+def install_websocket_probe(page):
+    page.add_init_script(
+        '''(() => {
+            const NativeWebSocket = window.WebSocket;
+            const paths = ['/ws/ticker', '/ws/orderbook', '/ws/trades'];
+            const metrics = {
+                created: Object.fromEntries(paths.map(path => [path, 0])),
+                active: Object.fromEntries(paths.map(path => [path, 0])),
+                messages: Object.fromEntries(paths.map(path => [path, 0])),
+                closes: Object.fromEntries(paths.map(path => [path, 0])),
+            };
+            const sockets = [];
+
+            class TrackedWebSocket extends NativeWebSocket {
+                constructor(url, protocols) {
+                    if (protocols === undefined) {
+                        super(url);
+                    } else {
+                        super(url, protocols);
+                    }
+
+                    const path = new URL(String(url), window.location.href).pathname;
+                    sockets.push({ path, socket: this });
+                    metrics.created[path] = (metrics.created[path] || 0) + 1;
+                    this.addEventListener('open', () => {
+                        metrics.active[path] = (metrics.active[path] || 0) + 1;
+                    });
+                    this.addEventListener('message', () => {
+                        metrics.messages[path] = (metrics.messages[path] || 0) + 1;
+                    });
+                    this.addEventListener('close', () => {
+                        metrics.active[path] = Math.max(0, (metrics.active[path] || 0) - 1);
+                        metrics.closes[path] = (metrics.closes[path] || 0) + 1;
+                    });
+                }
+            }
+
+            window.WebSocket = TrackedWebSocket;
+            window.__nmeWebSocketProbe = {
+                snapshot: () => {
+                    const open = Object.fromEntries(paths.map(path => [path, 0]));
+                    for (const entry of sockets) {
+                        if (entry.socket.readyState === NativeWebSocket.OPEN) {
+                            open[entry.path] = (open[entry.path] || 0) + 1;
+                        }
+                    }
+                    return JSON.parse(JSON.stringify({ ...metrics, open }));
+                },
+                closeAll: () => {
+                    let closed = 0;
+                    for (const entry of sockets) {
+                        if (paths.includes(entry.path) && entry.socket.readyState === NativeWebSocket.OPEN) {
+                            entry.socket.close(4000, 'NME browser reconnect test');
+                            closed += 1;
+                        }
+                    }
+                    return closed;
+                },
+                inject: (path, data) => {
+                    const entry = [...sockets].reverse().find(
+                        item => item.path === path && item.socket.readyState === NativeWebSocket.OPEN
+                    );
+                    if (!entry) return false;
+                    entry.socket.dispatchEvent(new MessageEvent('message', { data }));
+                    return true;
+                },
+            };
+        })()'''
+    )
+
+
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):
     console_errors = []
     page_errors = []
@@ -278,6 +349,148 @@ def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_
     assert unexpected_api_errors == [], f'unexpected API error responses: {unexpected_api_errors}'
     assert filtered_console_errors == [], f'console errors: {console_errors}; browser error responses: {browser_error_responses}'
     assert request_failures == []
+
+
+def test_browser_websocket_disconnect_reconnect_and_cleanup(browser, browser_frontend_url, browser_backend_url):
+    paths = ['/ws/ticker', '/ws/orderbook', '/ws/trades']
+    context = browser.new_context()
+    page = context.new_page()
+    page_errors = []
+    page.on('pageerror', lambda error: page_errors.append(str(error)))
+    install_websocket_probe(page)
+
+    login_user(page, browser_frontend_url, browser_backend_url, 'bob@example.com')
+    ticker_status = page.locator('.signal-pill')
+    orderbook_status = page.locator('.orderbook-panel .feed-status-row')
+    trade_status = page.locator('.trade-panel .feed-status-row')
+    expect(ticker_status).to_contain_text('LIVE')
+    expect(orderbook_status).to_contain_text('LIVE')
+    expect(trade_status).to_contain_text('LIVE')
+
+    page.wait_for_function(
+        '''paths => {
+            const snapshot = window.__nmeWebSocketProbe.snapshot();
+            return paths.every(path => snapshot.open[path] >= 1 && snapshot.messages[path] > 0);
+        }''',
+        arg=paths,
+    )
+    before_disconnect = page.evaluate('() => window.__nmeWebSocketProbe.snapshot()')
+    assert all(before_disconnect['open'][path] == 1 for path in paths), before_disconnect
+    ticker_time_before = page.locator('.ticker-card.primary .ticker-timestamp').inner_text()
+    orderbook_time_before = page.locator('.orderbook-panel .orderbook-time').inner_text()
+    trade_row_before = page.locator('.trade-panel .trade-table tbody tr').first.inner_text()
+
+    page.get_by_role('button', name='거래 이력').click()
+    expect(page.get_by_role('heading', name='거래 이력')).to_be_visible()
+    page.get_by_role('button', name='Market').click()
+    expect(page.get_by_role('heading', name='NME Live Market')).to_be_visible()
+    after_navigation = page.evaluate('() => window.__nmeWebSocketProbe.snapshot()')
+    assert all(after_navigation['open'][path] == 1 for path in paths)
+    assert after_navigation['created'] == before_disconnect['created']
+
+    page.evaluate(
+        '''() => {
+            const selectors = {
+                ticker: '.signal-pill',
+                orderbook: '.orderbook-panel .feed-status-row',
+                trades: '.trade-panel .feed-status-row',
+            };
+            window.__nmeStatusTransitions = Object.fromEntries(
+                Object.entries(selectors).map(([name, selector]) => {
+                    const element = document.querySelector(selector);
+                    const values = [element?.textContent?.trim() || ''];
+                    new MutationObserver(() => values.push(element?.textContent?.trim() || ''))
+                        .observe(element, { childList: true, subtree: true, characterData: true });
+                    return [name, values];
+                })
+            );
+        }'''
+    )
+    closed_count = page.evaluate('() => window.__nmeWebSocketProbe.closeAll()')
+    assert closed_count == 3
+    expect(ticker_status).to_contain_text('DISCONNECTED')
+    expect(orderbook_status).to_contain_text('DISCONNECTED')
+    expect(trade_status).to_contain_text('DISCONNECTED')
+
+    page.wait_for_function(
+        '''({ paths, before }) => {
+            const snapshot = window.__nmeWebSocketProbe.snapshot();
+            return paths.every(path =>
+                snapshot.created[path] === before.created[path] + 1 &&
+                snapshot.open[path] === 1 &&
+                snapshot.messages[path] > before.messages[path]
+            );
+        }''',
+        arg={'paths': paths, 'before': before_disconnect},
+        timeout=10000,
+    )
+    expect(ticker_status).to_contain_text('LIVE')
+    expect(orderbook_status).to_contain_text('LIVE')
+    expect(trade_status).to_contain_text('LIVE')
+    expect(page.locator('.ticker-card.primary .ticker-timestamp')).not_to_have_text(ticker_time_before)
+    expect(page.locator('.orderbook-panel .orderbook-time')).not_to_have_text(orderbook_time_before)
+    expect(page.locator('.trade-panel .trade-table tbody tr').first).not_to_have_text(trade_row_before)
+    trade_ids = page.locator('.trade-panel tr[data-trade-id]').evaluate_all(
+        '(rows) => rows.map(row => row.dataset.tradeId)'
+    )
+    assert len(trade_ids) == len(set(trade_ids))
+    status_transitions = page.evaluate('() => window.__nmeStatusTransitions')
+    assert any('DISCONNECTED' in value for value in status_transitions['ticker'])
+    assert any('RECONNECTING' in value for value in status_transitions['ticker'])
+    assert any('DISCONNECTED' in value for value in status_transitions['orderbook'])
+    assert any('RECONNECTING' in value for value in status_transitions['orderbook'])
+    assert any('DISCONNECTED' in value for value in status_transitions['trades'])
+    assert any('RECONNECTING' in value for value in status_transitions['trades'])
+
+    orderbook_before_malformed = page.locator('.orderbook-shell').inner_text()
+    trade_before_malformed = page.locator('.trade-panel .trade-table tbody').inner_text()
+    malformed_payloads = [
+        'not-json',
+        '{}',
+        'null',
+        '{"price":"abc","time":"invalid"}',
+        '{"bids":[],"asks":[],"best_bid":"abc","best_ask":null,"spread":null,"time":"invalid"}',
+        '{"trade_id":1,"product_id":1,"price":"abc","quantity":"abc","side":"hold","time":"invalid"}',
+    ]
+    for malformed_payload in malformed_payloads:
+        assert page.evaluate(
+            '''payload => {
+            const probe = window.__nmeWebSocketProbe;
+            return probe.inject('/ws/ticker', payload) &&
+                probe.inject('/ws/orderbook', payload) &&
+                probe.inject('/ws/trades', payload);
+        }''',
+            malformed_payload,
+        ) is True
+    page.wait_for_timeout(100)
+    assert 'NaN' not in page.locator('.ticker-card.primary').inner_text()
+    assert 'Invalid Date' not in page.locator('.ticker-card.primary').inner_text()
+    assert page.locator('.orderbook-shell').inner_text() == orderbook_before_malformed
+    assert page.locator('.trade-panel .trade-table tbody').inner_text() == trade_before_malformed
+    assert page_errors == []
+
+    page.reload(wait_until='domcontentloaded')
+    expect(page.get_by_role('heading', name='NME Live Market')).to_be_visible()
+    page.wait_for_function(
+        '''paths => {
+            const snapshot = window.__nmeWebSocketProbe.snapshot();
+            return paths.every(path => snapshot.open[path] === 1 && snapshot.messages[path] > 0);
+        }''',
+        arg=paths,
+    )
+
+    page.get_by_role('button', name='로그아웃').click()
+    expect(page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
+    page.wait_for_function(
+        '''paths => {
+            const snapshot = window.__nmeWebSocketProbe.snapshot();
+            return paths.every(path => snapshot.open[path] === 0);
+        }''',
+        arg=paths,
+    )
+    after_logout = page.evaluate('() => window.__nmeWebSocketProbe.snapshot()')
+    page.wait_for_timeout(1500)
+    assert page.evaluate('() => window.__nmeWebSocketProbe.snapshot()')['created'] == after_logout['created']
 
 
 def test_browser_direct_buy_sell_match(browser, browser_frontend_url, browser_backend_url, seeded_ids):

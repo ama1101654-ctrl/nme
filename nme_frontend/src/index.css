@@ -29,6 +29,7 @@ button.secondary{background:#666}
 .signal-pill{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid #d9e6ff;background:#edf5ff;color:#0b3b66}
 .signal-pill.live{background:#e7f7ee;border-color:#bde8c8;color:#1a7a42}
 .signal-pill.connecting{background:#edf5ff;border-color:#cfe1ff;color:#0b69ff}
+.signal-pill.reconnecting{background:#fff7e6;border-color:#f1d28a;color:#7a5200}
 .signal-pill.disconnected{background:#f4f7fb;border-color:#dfe8f7;color:#596e8d}
 .signal-pill.error{background:#fdeeee;border-color:#f4c1c8;color:#a50d26}
 .ticker-grid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:12px;margin-bottom:16px}
