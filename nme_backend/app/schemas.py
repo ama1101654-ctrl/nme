@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ItemBase(BaseModel):
@@ -40,6 +40,29 @@ class UserResponse(BaseModel):
     role: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CompanyMembershipResponse(BaseModel):
+    company_id: int
+    company_name: str
+    trading_role: Literal["BUYER", "SELLER", "BOTH"]
+    status: Literal["ACTIVE", "INACTIVE"]
+
+
+class InvestorProfileSummary(BaseModel):
+    investor_type: Literal["INDIVIDUAL", "CORPORATE"]
+    display_name: str | None = None
+    country: str | None = None
+    status: Literal["ACTIVE", "INACTIVE"]
+
+
+class MemberMeResponse(BaseModel):
+    user_id: int
+    member_type: Literal["COMPANY", "INVESTOR", "SEARCH"] | None = None
+    display_name: str | None = None
+    status: Literal["ACTIVE", "INACTIVE"] | None = None
+    companies: list[CompanyMembershipResponse] = Field(default_factory=list)
+    investor_profile: InvestorProfileSummary | None = None
 
 
 class LoginRequest(BaseModel):

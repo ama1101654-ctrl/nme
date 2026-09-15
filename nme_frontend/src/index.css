@@ -118,6 +118,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 .history-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .history-head h3{margin:0}
 .history-user{margin-top:8px;color:#0b3b66;font-weight:600}
+.member-context{margin:0 16px 12px;padding:8px 12px;border-left:3px solid #0b69ff;background:#f3f7ff;color:#0b3b66;font-size:13px;font-weight:700}
 .dashboard-grid{margin-top:12px;display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
 .dashboard-card{padding:14px}
 .dashboard-title{font-size:13px;color:#24507f}

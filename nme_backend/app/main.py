@@ -26,6 +26,7 @@ from .schemas import (
     ItemCreate,
     LoginRequest,
     LoginResponse,
+    MemberMeResponse,
     ProductCreate,
     ProductResponse,
     RefreshTokenRequest,
@@ -1071,6 +1072,43 @@ def create_product(
 def read_auth_me(current_user: User = Depends(get_current_auth_user)):
     """Return the currently authenticated MVP user."""
     return current_user
+
+
+@app.get("/members/me", response_model=MemberMeResponse, tags=["members"])
+def read_member_me(
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Return only the authenticated user's optional NME business identity."""
+    member_profile = crud.get_member_profile_by_user(db=db, user_id=current_user.id)
+    memberships = crud.get_company_memberships_by_user(db=db, user_id=current_user.id)
+    investor_profile = crud.get_investor_profile_by_user(db=db, user_id=current_user.id)
+
+    return {
+        "user_id": current_user.id,
+        "member_type": member_profile.member_type if member_profile else None,
+        "display_name": member_profile.display_name if member_profile else None,
+        "status": member_profile.status if member_profile else None,
+        "companies": [
+            {
+                "company_id": membership.company_id,
+                "company_name": membership.company.company_name,
+                "trading_role": membership.trading_role,
+                "status": membership.status,
+            }
+            for membership in memberships
+        ],
+        "investor_profile": (
+            {
+                "investor_type": investor_profile.investor_type,
+                "display_name": investor_profile.display_name,
+                "country": investor_profile.country,
+                "status": investor_profile.status,
+            }
+            if investor_profile
+            else None
+        ),
+    }
 
 
 @app.post("/auth/logout", tags=["auth"])

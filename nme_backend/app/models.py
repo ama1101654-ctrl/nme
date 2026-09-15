@@ -1,4 +1,5 @@
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.orm import relationship
 
 from .database import Base
 
@@ -26,6 +27,92 @@ class User(Base):
     password = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="user")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    member_profile = relationship("MemberProfile", back_populates="user", uselist=False)
+    company_memberships = relationship("CompanyMember", back_populates="user")
+    investor_profile = relationship("InvestorProfile", back_populates="user", uselist=False)
+
+
+class MemberProfile(Base):
+    """NME business identity linked to an existing authentication user."""
+
+    __tablename__ = "member_profiles"
+    __table_args__ = (
+        CheckConstraint("member_type IN ('COMPANY', 'INVESTOR', 'SEARCH')", name="ck_member_profiles_type"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_member_profiles_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False, index=True)
+    member_type = Column(String(20), nullable=False)
+    display_name = Column(String(150), nullable=True)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="member_profile")
+
+
+class Company(Base):
+    """Minimal company identity for NME membership."""
+
+    __tablename__ = "companies"
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_companies_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String(150), nullable=False, index=True)
+    business_registration_number = Column(String(50), unique=True, nullable=False, index=True)
+    country = Column(String(100), nullable=False)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    members = relationship("CompanyMember", back_populates="company")
+
+
+class CompanyMember(Base):
+    """A user's membership and trading role within a company."""
+
+    __tablename__ = "company_members"
+    __table_args__ = (
+        UniqueConstraint("company_id", "user_id", name="uq_company_members_company_user"),
+        CheckConstraint("trading_role IN ('BUYER', 'SELLER', 'BOTH')", name="ck_company_members_trading_role"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_company_members_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    trading_role = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    company = relationship("Company", back_populates="members")
+    user = relationship("User", back_populates="company_memberships")
+
+
+class InvestorProfile(Base):
+    """Minimal investor identity without financial account or investment data."""
+
+    __tablename__ = "investor_profiles"
+    __table_args__ = (
+        CheckConstraint("investor_type IN ('INDIVIDUAL', 'CORPORATE')", name="ck_investor_profiles_type"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_investor_profiles_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False, index=True)
+    investor_type = Column(String(20), nullable=False)
+    display_name = Column(String(150), nullable=True)
+    country = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="investor_profile")
 
 
 class AuthSession(Base):

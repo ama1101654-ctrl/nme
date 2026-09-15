@@ -188,6 +188,10 @@ function buildAuthMeUrl(){
   return API + '/auth/me'
 }
 
+function buildMemberMeUrl(){
+  return API + '/members/me'
+}
+
 function buildAuthRefreshUrl(){
   return API + '/auth/refresh'
 }
@@ -307,6 +311,21 @@ function labelUserRole(role){
 function labelUserCode(role){
   const normalizedRole = String(role || '').toUpperCase()
   return USER_ROLE_CODE[normalizedRole] || 'User'
+}
+
+function formatMemberIdentity(profile){
+  if(!profile?.member_type) return 'NME Member: 미등록'
+  if(profile.member_type === 'COMPANY'){
+    const membership = profile.companies?.[0]
+    const companyName = membership?.company_name || profile.display_name || '회사 미지정'
+    const tradingRole = membership?.trading_role === 'BOTH' ? 'BUYER / SELLER' : membership?.trading_role || '역할 미지정'
+    return `NME Member: COMPANY · ${companyName} · ${tradingRole}`
+  }
+  if(profile.member_type === 'INVESTOR'){
+    const investorType = profile.investor_profile?.investor_type
+    return `NME Member: INVESTOR${investorType ? ` · ${investorType}` : ''}`
+  }
+  return 'NME Member: SEARCH'
 }
 
 function isBuyerRole(role){
@@ -933,6 +952,9 @@ export default function App(){
   const [currentUser, setCurrentUser] = useState(fallbackCurrentUser)
   const [userLoading, setUserLoading] = useState(false)
   const [userError, setUserError] = useState(null)
+  const [memberProfile, setMemberProfile] = useState(null)
+  const [memberProfileLoading, setMemberProfileLoading] = useState(false)
+  const [memberProfileError, setMemberProfileError] = useState(null)
   const [market, setMarket] = useState([])
   const [marketSummaries, setMarketSummaries] = useState({})
   const [loading, setLoading] = useState(false)
@@ -1126,6 +1148,40 @@ export default function App(){
 
     loadCurrentUser()
 
+    return ()=>{
+      cancelled = true
+    }
+  }, [bootstrapUserId, isAuthGateVisible, isAuthenticatedSession])
+
+  useEffect(()=>{
+    if(isAuthGateVisible || !isAuthenticatedSession){
+      setMemberProfile(null)
+      setMemberProfileLoading(false)
+      setMemberProfileError(null)
+      return
+    }
+
+    let cancelled = false
+
+    async function loadMemberProfile(){
+      setMemberProfileLoading(true)
+      setMemberProfileError(null)
+      try{
+        const response = await authFetch(buildMemberMeUrl())
+        if(!response.ok){
+          const payload = await response.json().catch(()=>({detail: response.statusText}))
+          throw new Error(getMutationErrorMessage(response.status, payload.detail, '회원 정보를 불러오지 못했습니다.'))
+        }
+        const profile = await response.json()
+        if(!cancelled) setMemberProfile(profile)
+      }catch(err){
+        if(!cancelled) setMemberProfileError(err?.message || '회원 정보를 불러오지 못했습니다.')
+      }finally{
+        if(!cancelled) setMemberProfileLoading(false)
+      }
+    }
+
+    loadMemberProfile()
     return ()=>{
       cancelled = true
     }
@@ -2152,6 +2208,12 @@ export default function App(){
 
         {userLoading && <div className="info">현재 사용자 정보를 불러오는 중...</div>}
         {userError && <div className="error-msg">{userError}</div>}
+        {isAuthenticatedSession && (
+          <div className="member-context" aria-live="polite">
+            {memberProfileLoading ? 'NME Member: 조회 중...' : formatMemberIdentity(memberProfile)}
+          </div>
+        )}
+        {memberProfileError && <div className="error-msg">{memberProfileError}</div>}
 
         <section>
           <div className="trader-dashboard card">

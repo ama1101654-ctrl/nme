@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
+from app.database import SessionLocal
+from app.models import Company, CompanyMember, InvestorProfile, MemberProfile, User
+
 
 pytestmark = pytest.mark.browser
 
@@ -160,6 +163,45 @@ def install_websocket_probe(page):
             };
         })()'''
     )
+
+
+def test_browser_member_identity_context(browser, browser_frontend_url, browser_backend_url):
+    with SessionLocal() as db:
+        buyer = db.query(User).filter(User.email == 'bob@example.com').one()
+        seller = db.query(User).filter(User.email == 'charlie@example.com').one()
+        admin = db.query(User).filter(User.email == 'alice@example.com').one()
+        company = Company(
+            company_name='ABC Metals',
+            business_registration_number='BRN-BROWSER-001',
+            country='KR',
+        )
+        db.add_all([
+            company,
+            MemberProfile(user_id=buyer.id, member_type='COMPANY', display_name='ABC Metals Buyer'),
+            MemberProfile(user_id=seller.id, member_type='SEARCH', display_name='Market Searcher'),
+            MemberProfile(user_id=admin.id, member_type='INVESTOR', display_name='NME Investor'),
+            InvestorProfile(user_id=admin.id, investor_type='CORPORATE', display_name='NME Investor', country='KR'),
+        ])
+        db.flush()
+        db.add(CompanyMember(company_id=company.id, user_id=buyer.id, trading_role='BUYER'))
+        db.commit()
+
+    contexts = []
+    try:
+        for email, expected_identity in [
+            ('bob@example.com', 'NME Member: COMPANY · ABC Metals · BUYER'),
+            ('charlie@example.com', 'NME Member: SEARCH'),
+            ('alice@example.com', 'NME Member: INVESTOR · CORPORATE'),
+        ]:
+            context = browser.new_context()
+            contexts.append(context)
+            page = context.new_page()
+            login_user(page, browser_frontend_url, browser_backend_url, email)
+            expect(page.locator('.member-context')).to_have_text(expected_identity)
+            expect(page.get_by_role('button', name='Market')).to_be_visible()
+    finally:
+        for context in contexts:
+            context.close()
 
 
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):
