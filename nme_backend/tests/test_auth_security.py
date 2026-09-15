@@ -199,6 +199,7 @@ def test_deal_and_order_mutations_require_expected_owner(client, seeded_ids):
 
     assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}).status_code == 401
     assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=admin_headers).status_code == 403
+    assert client.patch(f'/deals/{deal_id}/status', json={'status': 'NEGOTIATING'}, headers=admin_headers).status_code == 403
     assert client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=buyer_headers).status_code == 403
 
     agreed = client.patch(f'/deals/{deal_id}/status', json={'status': 'AGREED'}, headers=seller_headers)

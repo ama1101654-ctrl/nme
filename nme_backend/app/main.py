@@ -1338,10 +1338,10 @@ def patch_deal_status(
 
     is_buyer = db_deal.buyer_id == current_user.id
     is_seller = db_product.seller_id == current_user.id
+    if not (is_buyer or is_seller):
+        raise HTTPException(status_code=403, detail='Only a deal participant can update this deal')
     if status_update.status in {'AGREED', 'REJECTED'} and not is_seller:
         raise HTTPException(status_code=403, detail='Only the product seller can approve or reject this deal')
-    if status_update.status == 'CANCELLED' and not (is_buyer or is_seller):
-        raise HTTPException(status_code=403, detail='Only a deal participant can cancel this deal')
 
     try:
         updated = crud.update_deal_status(db=db, deal_id=deal_id, new_status=status_update.status)
