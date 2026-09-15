@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from . import crud
 from .database import Base, SessionLocal, engine, get_db
 from .models import AuthSession, Item, Order, Product, Trade, User
+from .password_security import migrate_legacy_passwords
 from .schemas import (
     AuthSessionActionResponse,
     AuthSessionCleanupResponse,
@@ -45,6 +46,7 @@ from .schemas import DealCreate, DealResponse, DealStatusUpdate
 from .schemas import DealCompletionResponse
 
 Base.metadata.create_all(bind=engine)
+migrate_legacy_passwords(engine)
 
 
 def ensure_auth_sessions_last_used_at_column():

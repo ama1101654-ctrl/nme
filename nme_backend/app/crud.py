@@ -5,6 +5,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from .models import AuthSession, CompanyMember, Deal, InvestorProfile, Item, MemberProfile, Order, Product, User
+from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
 
@@ -106,12 +107,12 @@ def get_investor_profile_by_user(db: Session, user_id: int):
 
 
 def authenticate_user(db: Session, email: str, password: str):
-    """Authenticate a user using the existing MVP password field."""
+    """Authenticate a user using only the stored password hash."""
     user = get_user_by_email(db=db, email=email)
     if user is None:
         return None
 
-    if user.password != password:
+    if not verify_password(password, user.password_hash):
         return None
 
     return user

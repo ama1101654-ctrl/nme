@@ -1,7 +1,8 @@
-from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.orm import relationship
 
 from .database import Base
+from .password_security import PASSWORD_DISABLED_VALUE, hash_password
 
 
 class Item(Base):
@@ -24,13 +25,26 @@ class User(Base):
     company_name = Column(String(150), nullable=True)
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, index=True, nullable=False)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=False, default=PASSWORD_DISABLED_VALUE)
+    password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="user")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     member_profile = relationship("MemberProfile", back_populates="user", uselist=False)
     company_memberships = relationship("CompanyMember", back_populates="user")
     investor_profile = relationship("InvestorProfile", back_populates="user", uselist=False)
+
+
+@event.listens_for(User, "before_insert")
+def hash_new_user_password(_, __, user):
+    """Ensure direct ORM user creation never persists a plaintext password."""
+    if user.password_hash:
+        user.password = PASSWORD_DISABLED_VALUE
+        return
+    if not user.password or user.password == PASSWORD_DISABLED_VALUE:
+        raise ValueError("Password is required")
+    user.password_hash = hash_password(user.password)
+    user.password = PASSWORD_DISABLED_VALUE
 
 
 class MemberProfile(Base):

@@ -204,6 +204,41 @@ def test_browser_member_identity_context(browser, browser_frontend_url, browser_
             context.close()
 
 
+def test_browser_password_security_login_and_logout(page, browser_frontend_url, browser_backend_url):
+    page.goto(browser_frontend_url, wait_until='domcontentloaded')
+    password_input = page.locator('input[type="password"]')
+    expect(password_input).to_be_visible()
+
+    page.locator('input[type="email"]').fill('bob@example.com')
+    password_input.fill('wrong-password')
+    page.get_by_role('button', name='로그인').click()
+    expect(page.get_by_text('이메일 또는 비밀번호를 확인해 주세요.')).to_be_visible()
+    expect(page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
+
+    password_input.fill('secret')
+    page.get_by_role('button', name='로그인').click()
+    expect(page.get_by_role('heading', name='NME Live Market')).to_be_visible()
+    expect(page.locator('.member-context')).to_be_visible()
+    expect(page.get_by_role('button', name='BUY 주문').first).to_be_visible()
+    expect(page.get_by_role('button', name='SELL 주문').first).to_be_visible()
+
+    stored_values = page.evaluate(
+        """() => ({
+            local: Object.values(localStorage),
+            session: Object.values(sessionStorage),
+        })"""
+    )
+    assert 'secret' not in stored_values['local']
+    assert 'secret' not in stored_values['session']
+    assert 'wrong-password' not in stored_values['local']
+    assert 'wrong-password' not in stored_values['session']
+    assert 'secret' not in page.locator('body').inner_text()
+
+    page.get_by_role('button', name='로그아웃').click()
+    expect(page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
+    assert api_fetch(page, browser_backend_url, '/members/me')['status'] == 401
+
+
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):
     console_errors = []
     page_errors = []
