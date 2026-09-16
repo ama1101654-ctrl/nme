@@ -331,6 +331,46 @@ class Trade(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class Contract(Base):
+    """Immutable commercial terms captured from one matched trade."""
+
+    __tablename__ = "contracts"
+    __table_args__ = (
+        UniqueConstraint("contract_no", name="uq_contracts_contract_no"),
+        UniqueConstraint("trade_id", name="uq_contracts_trade_id"),
+        CheckConstraint("TRIM(contract_no) <> ''", name="ck_contracts_no_not_blank"),
+        CheckConstraint("quantity > 0", name="ck_contracts_quantity_positive"),
+        CheckConstraint("TRIM(unit) <> ''", name="ck_contracts_unit_not_blank"),
+        CheckConstraint("price > 0", name="ck_contracts_price_positive"),
+        CheckConstraint("TRIM(currency) <> ''", name="ck_contracts_currency_not_blank"),
+        CheckConstraint("total_value > 0", name="ck_contracts_total_value_positive"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED')",
+            name="ck_contracts_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_no = Column(String(50), nullable=False, index=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
+    buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    seller_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+    unit = Column(String(20), nullable=False)
+    price = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=False, default="KRW")
+    total_value = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, default="DRAFT")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    trade = relationship("Trade")
+    product = relationship("Product")
+    buyer = relationship("User", foreign_keys=[buyer_id])
+    seller = relationship("User", foreign_keys=[seller_id])
+
+
 class Deal(Base):
     """A minimal Deal model representing a negotiation proposal from a buyer."""
 

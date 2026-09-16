@@ -4,7 +4,7 @@ from sqlalchemy import or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -109,6 +109,69 @@ def get_inventories(db: Session):
 def get_inventory(db: Session, inventory_id: int):
     """Return an inventory record by id."""
     return db.query(Inventory).filter(Inventory.id == inventory_id).first()
+
+
+def get_contract(db: Session, contract_id: int):
+    """Return a contract by id."""
+    return db.query(Contract).filter(Contract.id == contract_id).first()
+
+
+def get_contract_by_trade(db: Session, trade_id: int):
+    """Return the single contract for a trade, if present."""
+    return db.query(Contract).filter(Contract.trade_id == trade_id).first()
+
+
+def get_contracts_for_user(db: Session, user: User):
+    """Return all contracts for admins or participant contracts for other users."""
+    query = db.query(Contract)
+    if str(user.role or "").upper() != "ADMIN":
+        query = query.filter(or_(Contract.buyer_id == user.id, Contract.seller_id == user.id))
+    return query.order_by(Contract.id.desc()).all()
+
+
+def create_contract_from_trade(db: Session, trade_id: int):
+    """Validate a trade graph and stage an immutable contract snapshot."""
+    trade = db.query(Trade).filter(Trade.id == trade_id).first()
+    if trade is None:
+        return None
+
+    buy_order = db.query(Order).filter(Order.id == trade.buy_order_id).first()
+    sell_order = db.query(Order).filter(Order.id == trade.sell_order_id).first()
+    product = db.query(Product).filter(Product.id == trade.product_id).first()
+    if buy_order is None or sell_order is None or product is None:
+        raise ValueError("Trade references are incomplete")
+    if buy_order.side != "buy" or sell_order.side != "sell":
+        raise ValueError("Trade order sides are inconsistent")
+    if trade.product_id != buy_order.product_id or trade.product_id != sell_order.product_id:
+        raise ValueError("Trade and order products are inconsistent")
+    if buy_order.buyer_id is None or sell_order.seller_id is None:
+        raise ValueError("Trade participants are incomplete")
+    if db.query(User).filter(User.id == buy_order.buyer_id).first() is None:
+        raise ValueError("Trade buyer does not exist")
+    if db.query(User).filter(User.id == sell_order.seller_id).first() is None:
+        raise ValueError("Trade seller does not exist")
+    if trade.quantity is None or trade.quantity <= 0 or trade.price is None or trade.price <= 0:
+        raise ValueError("Trade quantity and price must be positive")
+    if not str(product.unit or "").strip():
+        raise ValueError("Product unit is required")
+
+    trade_year = trade.created_at.year if trade.created_at is not None else datetime.now(timezone.utc).year
+    contract = Contract(
+        contract_no=f"NME-CT-{trade_year}-{trade.id:010d}",
+        trade_id=trade.id,
+        product_id=trade.product_id,
+        buyer_id=buy_order.buyer_id,
+        seller_id=sell_order.seller_id,
+        quantity=trade.quantity,
+        unit=str(product.unit).strip().upper(),
+        price=trade.price,
+        currency="KRW",
+        total_value=trade.quantity * trade.price,
+        status="DRAFT",
+    )
+    db.add(contract)
+    db.flush()
+    return contract
 
 
 def get_warehouse_inventory(db: Session, warehouse_id: int):

@@ -13,11 +13,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from jose import ExpiredSignatureError, JWTError, jwt
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import crud
 from .database import Base, SessionLocal, engine, get_db
-from .models import AuthSession, Item, Order, Product, Trade, User
+from .models import AuthSession, Contract, Item, Order, Product, Trade, User
 from .password_security import migrate_legacy_passwords
 from .schemas import (
     AuthSessionActionResponse,
@@ -38,6 +39,7 @@ from .schemas import (
     OrderResponse,
     TradeHistoryEntry,
     TradeResponse,
+    ContractResponse,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
@@ -216,6 +218,7 @@ app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
 SELL_RESERVATION_LOCK = Lock()
 MATCHING_LOCK = Lock()
+CONTRACT_CREATION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -1565,6 +1568,89 @@ def read_trade_detail(trade_id: int, db: Session = Depends(get_db)):
         "side": payload["side"],
         "time": payload["time"],
     }
+
+
+def _require_contract_access(contract: Contract, current_user: User):
+    if str(current_user.role or "").upper() == "ADMIN":
+        return
+    if current_user.id not in {contract.buyer_id, contract.seller_id}:
+        raise HTTPException(status_code=403, detail="Contract access is limited to its participants")
+
+
+@app.post("/trades/{trade_id}/contract", response_model=ContractResponse, tags=["contracts"])
+def create_trade_contract(
+    trade_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create one immutable contract snapshot from an existing matched trade."""
+    with CONTRACT_CREATION_LOCK:
+        try:
+            trade = db.query(Trade).filter(Trade.id == trade_id).first()
+            if trade is None:
+                raise HTTPException(status_code=404, detail="Trade not found")
+
+            buy_order = db.query(Order).filter(Order.id == trade.buy_order_id).first()
+            sell_order = db.query(Order).filter(Order.id == trade.sell_order_id).first()
+            if buy_order is None or sell_order is None:
+                raise HTTPException(status_code=422, detail="Trade order references are incomplete")
+
+            participant_ids = {buy_order.buyer_id, sell_order.seller_id}
+            if str(current_user.role or "").upper() != "ADMIN" and current_user.id not in participant_ids:
+                raise HTTPException(status_code=403, detail="Only a trade participant can create its contract")
+            if crud.get_contract_by_trade(db=db, trade_id=trade_id) is not None:
+                raise HTTPException(status_code=409, detail="Contract already exists for this trade")
+
+            contract = crud.create_contract_from_trade(db=db, trade_id=trade_id)
+            db.commit()
+            db.refresh(contract)
+            return contract
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Contract already exists for this trade") from exc
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/contracts", response_model=list[ContractResponse], tags=["contracts"])
+def read_contracts(
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read contracts visible to the authenticated participant or admin."""
+    return crud.get_contracts_for_user(db=db, user=current_user)
+
+
+@app.get("/contracts/{contract_id}", response_model=ContractResponse, tags=["contracts"])
+def read_contract(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read one contract when the user is a participant or admin."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    return contract
+
+
+@app.get("/trades/{trade_id}/contract", response_model=ContractResponse, tags=["contracts"])
+def read_trade_contract(
+    trade_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read the single contract associated with a trade."""
+    contract = crud.get_contract_by_trade(db=db, trade_id=trade_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    return contract
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

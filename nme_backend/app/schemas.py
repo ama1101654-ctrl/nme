@@ -338,6 +338,25 @@ class TradeHistoryEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ContractResponse(BaseModel):
+    id: int
+    contract_no: str
+    trade_id: int
+    product_id: int
+    buyer_id: int
+    seller_id: int
+    quantity: int
+    unit: str
+    price: int
+    currency: Literal["KRW"]
+    total_value: int
+    status: Literal["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TradeResponse(BaseModel):
     trade_id: int
     product_id: int
