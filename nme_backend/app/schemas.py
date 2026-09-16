@@ -160,6 +160,38 @@ class MetalGradeMasterResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WarehouseResponse(BaseModel):
+    id: int
+    company_id: int
+    code: str
+    name: str
+    country: str | None = None
+    region: str | None = None
+    address: str | None = None
+    status: Literal["ACTIVE", "INACTIVE"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryResponse(BaseModel):
+    id: int
+    warehouse_id: int
+    metal_id: int | None = None
+    grade_id: int | None = None
+    product_id: int | None = None
+    quantity: float
+    reserved_quantity: float
+    available_quantity: float
+    unit: str
+    status: Literal["ACTIVE", "INACTIVE"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OrderCreate(BaseModel):
     """Schema used when creating a new Order.
 

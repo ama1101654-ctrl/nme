@@ -4,7 +4,7 @@ from sqlalchemy import or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, CompanyMember, Deal, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, User
+from .models import AuthSession, Company, CompanyMember, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -74,6 +74,51 @@ def get_grades_by_metal(db: Session, metal_id: int):
 def get_grade_master(db: Session, grade_id: int):
     """Return a grade master by id."""
     return db.query(MetalGradeMaster).filter(MetalGradeMaster.id == grade_id).first()
+
+
+def get_warehouses(db: Session):
+    """Return all warehouses, including inactive historical locations."""
+    return db.query(Warehouse).order_by(Warehouse.code.asc()).all()
+
+
+def get_warehouse(db: Session, warehouse_id: int):
+    """Return a warehouse by id."""
+    return db.query(Warehouse).filter(Warehouse.id == warehouse_id).first()
+
+
+def get_company_warehouses(db: Session, company_id: int):
+    """Return all warehouses owned by one company."""
+    return (
+        db.query(Warehouse)
+        .filter(Warehouse.company_id == company_id)
+        .order_by(Warehouse.code.asc())
+        .all()
+    )
+
+
+def get_company(db: Session, company_id: int):
+    """Return a company by id."""
+    return db.query(Company).filter(Company.id == company_id).first()
+
+
+def get_inventories(db: Session):
+    """Return all physical inventory references without mutating listings."""
+    return db.query(Inventory).order_by(Inventory.id.asc()).all()
+
+
+def get_inventory(db: Session, inventory_id: int):
+    """Return an inventory record by id."""
+    return db.query(Inventory).filter(Inventory.id == inventory_id).first()
+
+
+def get_warehouse_inventory(db: Session, warehouse_id: int):
+    """Return all inventory records held at one warehouse."""
+    return (
+        db.query(Inventory)
+        .filter(Inventory.warehouse_id == warehouse_id)
+        .order_by(Inventory.id.asc())
+        .all()
+    )
 
 
 def create_user(db: Session, user: UserCreate) -> User:

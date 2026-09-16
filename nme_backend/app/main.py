@@ -41,6 +41,8 @@ from .schemas import (
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
+    InventoryResponse,
+    WarehouseResponse,
 )
 from .schemas import OrderStatusUpdate
 from .schemas import MarketResponse
@@ -1145,6 +1147,74 @@ def read_member_me(
             else None
         ),
     }
+
+
+@app.get("/warehouses", response_model=list[WarehouseResponse], tags=["warehouses"])
+def read_warehouses(
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read warehouse references for authenticated NME users."""
+    return crud.get_warehouses(db=db)
+
+
+@app.get("/warehouses/{warehouse_id}", response_model=WarehouseResponse, tags=["warehouses"])
+def read_warehouse(
+    warehouse_id: int,
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read one warehouse reference."""
+    warehouse = crud.get_warehouse(db=db, warehouse_id=warehouse_id)
+    if warehouse is None:
+        raise HTTPException(status_code=404, detail="Warehouse not found")
+    return warehouse
+
+
+@app.get("/companies/{company_id}/warehouses", response_model=list[WarehouseResponse], tags=["warehouses"])
+def read_company_warehouses(
+    company_id: int,
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read warehouses owned by an existing company."""
+    if crud.get_company(db=db, company_id=company_id) is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return crud.get_company_warehouses(db=db, company_id=company_id)
+
+
+@app.get("/inventory", response_model=list[InventoryResponse], tags=["inventory"])
+def read_inventories(
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read physical inventory references without changing product stock."""
+    return crud.get_inventories(db=db)
+
+
+@app.get("/inventory/{inventory_id}", response_model=InventoryResponse, tags=["inventory"])
+def read_inventory(
+    inventory_id: int,
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read one physical inventory reference."""
+    inventory = crud.get_inventory(db=db, inventory_id=inventory_id)
+    if inventory is None:
+        raise HTTPException(status_code=404, detail="Inventory not found")
+    return inventory
+
+
+@app.get("/warehouses/{warehouse_id}/inventory", response_model=list[InventoryResponse], tags=["inventory"])
+def read_warehouse_inventory(
+    warehouse_id: int,
+    _: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read physical inventory references held at one warehouse."""
+    if crud.get_warehouse(db=db, warehouse_id=warehouse_id) is None:
+        raise HTTPException(status_code=404, detail="Warehouse not found")
+    return crud.get_warehouse_inventory(db=db, warehouse_id=warehouse_id)
 
 
 @app.post("/auth/logout", tags=["auth"])

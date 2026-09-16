@@ -84,6 +84,7 @@ class Company(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     members = relationship("CompanyMember", back_populates="company")
+    warehouses = relationship("Warehouse", back_populates="company")
 
 
 class CompanyMember(Base):
@@ -186,6 +187,81 @@ class MetalGradeMaster(Base):
         if not normalized:
             raise ValueError("Grade code is required")
         return normalized
+
+
+class Warehouse(Base):
+    """A company-owned physical storage location reference."""
+
+    __tablename__ = "warehouses"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_warehouses_code"),
+        CheckConstraint("TRIM(code) <> ''", name="ck_warehouses_code_not_blank"),
+        CheckConstraint("code = UPPER(code)", name="ck_warehouses_code_uppercase"),
+        CheckConstraint("TRIM(name) <> ''", name="ck_warehouses_name_not_blank"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_warehouses_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    code = Column(String(50), nullable=False, index=True)
+    name = Column(String(150), nullable=False)
+    country = Column(String(100), nullable=True)
+    region = Column(String(100), nullable=True)
+    address = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    company = relationship("Company", back_populates="warehouses")
+    inventories = relationship("Inventory", back_populates="warehouse")
+
+    @validates("code")
+    def normalize_code(self, _, value):
+        normalized = str(value or "").strip().upper()
+        if not normalized:
+            raise ValueError("Warehouse code is required")
+        return normalized
+
+    @validates("name")
+    def validate_name(self, _, value):
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("Warehouse name is required")
+        return normalized
+
+
+class Inventory(Base):
+    """Future physical stock record kept independent from product listings."""
+
+    __tablename__ = "inventories"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_inventories_quantity_nonnegative"),
+        CheckConstraint("reserved_quantity >= 0", name="ck_inventories_reserved_nonnegative"),
+        CheckConstraint("reserved_quantity <= quantity", name="ck_inventories_reserved_within_quantity"),
+        CheckConstraint("TRIM(unit) <> ''", name="ck_inventories_unit_not_blank"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_inventories_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    metal_id = Column(Integer, ForeignKey("metal_masters.id"), nullable=True, index=True)
+    grade_id = Column(Integer, ForeignKey("metal_grade_masters.id"), nullable=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True, index=True)
+    quantity = Column(Float, nullable=False)
+    reserved_quantity = Column(Float, nullable=False, default=0.0)
+    unit = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="ACTIVE")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    warehouse = relationship("Warehouse", back_populates="inventories")
+    metal = relationship("MetalMaster")
+    grade = relationship("MetalGradeMaster")
+    product = relationship("Product")
+
+    @property
+    def available_quantity(self):
+        return self.quantity - self.reserved_quantity
 
 
 class AuthSession(Base):
