@@ -167,6 +167,10 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 .change-request-detail{border-left-color:#bf6b16}
 .terms-comparison th,.terms-comparison td{text-align:left;vertical-align:top}
 .terms-comparison tbody th{width:28%;color:#38516b}
+.change-request-actions{display:flex;gap:8px;align-items:center;margin:12px 0}
+.change-request-reject-form{margin:12px 0;padding:12px;border:1px solid #f0c8a0;border-radius:6px;background:#fff8f1}
+.change-request-reject-form label{display:block;margin-bottom:8px;font-weight:700;color:#743c09}
+.change-request-reject-form textarea{width:100%;min-height:84px;resize:vertical;padding:9px;border:1px solid #d8b48d;border-radius:6px;font:inherit}
 .todo-box{background:#eaf2ff;border-color:#cfe1ff}
 .todo-box.tone-required{background:#e7f2ff;border-color:#9fc3ff}
 .todo-box.tone-waiting{background:#eef4ff;border-color:#d3e2ff}

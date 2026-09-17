@@ -421,6 +421,31 @@ class ContractChangeRequestCreate(BaseModel):
         return normalized
 
 
+class ContractChangeRequestReject(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("reason")
+    @classmethod
+    def strip_rejection_reason(cls, value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+
+class ContractChangeRequestApprovalResponse(BaseModel):
+    id: int
+    approver_user_id: int
+    approver_side: Literal["BUYER", "SELLER"]
+    decision: Literal["APPROVED", "REJECTED"]
+    comment: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ContractChangeRequestSummaryResponse(BaseModel):
     change_request_id: int = Field(validation_alias="id")
     contract_id: int
@@ -429,6 +454,10 @@ class ContractChangeRequestSummaryResponse(BaseModel):
     requested_by: int = Field(validation_alias="requested_by_user_id")
     reason: str
     status: Literal["PENDING", "APPROVED", "REJECTED", "CANCELLED"]
+    buyer_approval: ContractChangeRequestApprovalResponse | None = None
+    seller_approval: ContractChangeRequestApprovalResponse | None = None
+    decided_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -44,6 +44,7 @@ from .schemas import (
     ContractRevisionSummaryResponse,
     ContractChangeRequestCreate,
     ContractChangeRequestDetailResponse,
+    ContractChangeRequestReject,
     ContractChangeRequestSummaryResponse,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
@@ -240,11 +241,28 @@ def ensure_contract_terms_columns():
         conn.commit()
 
 
+def ensure_contract_revision_active_unique_index():
+    """Ensure an existing Revision table allows at most one ACTIVE row per Contract."""
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='contract_revisions'")
+        ).scalar()
+        if table_exists is None:
+            return
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_revisions_active_contract "
+                "ON contract_revisions (contract_id) WHERE revision_status = 'ACTIVE'"
+            )
+        )
+
+
 ensure_auth_sessions_last_used_at_column()
 ensure_order_schema_columns()
 ensure_trade_table()
 ensure_product_reserved_quantity_column()
 ensure_contract_terms_columns()
+ensure_contract_revision_active_unique_index()
 
 app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -253,6 +271,7 @@ MATCHING_LOCK = Lock()
 CONTRACT_CREATION_LOCK = Lock()
 CONTRACT_REVISION_CREATION_LOCK = Lock()
 CONTRACT_CHANGE_REQUEST_CREATION_LOCK = Lock()
+CONTRACT_CHANGE_REQUEST_DECISION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -1611,6 +1630,14 @@ def _require_contract_access(contract: Contract, current_user: User):
         raise HTTPException(status_code=403, detail="Contract access is limited to its participants")
 
 
+def _contract_approver_side(contract: Contract, current_user: User):
+    if current_user.id == contract.buyer_id:
+        return "BUYER"
+    if current_user.id == contract.seller_id:
+        return "SELLER"
+    raise HTTPException(status_code=403, detail="Approval is limited to Contract participants")
+
+
 @app.post("/trades/{trade_id}/contract", response_model=ContractResponse, tags=["contracts"])
 def create_trade_contract(
     trade_id: int,
@@ -1849,6 +1876,99 @@ def read_contract_change_request(
     if change_request is None:
         raise HTTPException(status_code=404, detail="Change request not found")
     return change_request
+
+
+def _load_pending_change_request_for_decision(db, contract_id, change_request_id, current_user):
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    approver_side = _contract_approver_side(contract, current_user)
+    change_request = crud.get_contract_change_request(
+        db=db,
+        contract_id=contract_id,
+        change_request_id=change_request_id,
+    )
+    if change_request is None:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    if change_request.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Change request is no longer pending")
+    if crud.get_contract_change_request_approval(db, change_request.id, approver_side) is not None:
+        raise HTTPException(status_code=409, detail=f"{approver_side} has already decided this request")
+    if change_request.proposed_revision is None:
+        raise HTTPException(status_code=409, detail="Proposed revision not found")
+    return change_request, approver_side
+
+
+@app.post(
+    "/contracts/{contract_id}/change-requests/{change_request_id}/approve",
+    response_model=ContractChangeRequestDetailResponse,
+    tags=["contract-change-requests"],
+)
+def approve_contract_change_request(
+    contract_id: int,
+    change_request_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Record one party approval and activate the proposal after both approvals."""
+    with CONTRACT_CHANGE_REQUEST_DECISION_LOCK:
+        try:
+            change_request, approver_side = _load_pending_change_request_for_decision(
+                db, contract_id, change_request_id, current_user
+            )
+            result = crud.stage_contract_change_request_approval(
+                db, change_request, current_user.id, approver_side
+            )
+            db.commit()
+            db.refresh(result)
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Approval decision already exists") from exc
+        except Exception:
+            db.rollback()
+            raise
+
+
+@app.post(
+    "/contracts/{contract_id}/change-requests/{change_request_id}/reject",
+    response_model=ContractChangeRequestDetailResponse,
+    tags=["contract-change-requests"],
+)
+def reject_contract_change_request(
+    contract_id: int,
+    change_request_id: int,
+    payload: ContractChangeRequestReject,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Record one party rejection without changing either Revision status."""
+    with CONTRACT_CHANGE_REQUEST_DECISION_LOCK:
+        try:
+            change_request, approver_side = _load_pending_change_request_for_decision(
+                db, contract_id, change_request_id, current_user
+            )
+            result = crud.stage_contract_change_request_rejection(
+                db, change_request, current_user.id, approver_side, payload.reason
+            )
+            db.commit()
+            db.refresh(result)
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Approval decision already exists") from exc
+        except Exception:
+            db.rollback()
+            raise
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

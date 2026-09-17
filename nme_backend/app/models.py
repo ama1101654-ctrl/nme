@@ -414,6 +414,12 @@ class ContractRevision(Base):
     __tablename__ = "contract_revisions"
     __table_args__ = (
         UniqueConstraint("contract_id", "revision_no", name="uq_contract_revisions_contract_no"),
+        Index(
+            "uq_contract_revisions_active_contract",
+            "contract_id",
+            unique=True,
+            sqlite_where=text("revision_status = 'ACTIVE'"),
+        ),
         CheckConstraint("revision_no > 0", name="ck_contract_revisions_no_positive"),
         CheckConstraint(
             "revision_status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')",
@@ -501,6 +507,11 @@ class ContractChangeRequest(Base):
     base_revision = relationship("ContractRevision", foreign_keys=[base_revision_id])
     proposed_revision = relationship("ContractRevision", foreign_keys=[proposed_revision_id])
     requested_by_user = relationship("User", foreign_keys=[requested_by_user_id])
+    approvals = relationship(
+        "ContractChangeRequestApproval",
+        back_populates="change_request",
+        order_by="ContractChangeRequestApproval.id",
+    )
 
     @property
     def base_revision_no(self):
@@ -513,6 +524,62 @@ class ContractChangeRequest(Base):
     @property
     def proposed_revision_status(self):
         return self.proposed_revision.revision_status
+
+    @property
+    def buyer_approval(self):
+        return next((item for item in self.approvals if item.approver_side == "BUYER"), None)
+
+    @property
+    def seller_approval(self):
+        return next((item for item in self.approvals if item.approver_side == "SELLER"), None)
+
+    @property
+    def decided_at(self):
+        if self.status not in {"APPROVED", "REJECTED"} or not self.approvals:
+            return None
+        return max(item.created_at for item in self.approvals)
+
+    @property
+    def rejection_reason(self):
+        rejection = next((item for item in self.approvals if item.decision == "REJECTED"), None)
+        return rejection.comment if rejection else None
+
+
+class ContractChangeRequestApproval(Base):
+    """Immutable Buyer or Seller decision for one Contract Change Request."""
+
+    __tablename__ = "contract_change_request_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "change_request_id",
+            "approver_side",
+            name="uq_contract_change_request_approvals_request_side",
+        ),
+        CheckConstraint(
+            "approver_side IN ('BUYER', 'SELLER')",
+            name="ck_contract_change_request_approvals_side",
+        ),
+        CheckConstraint(
+            "decision IN ('APPROVED', 'REJECTED')",
+            name="ck_contract_change_request_approvals_decision",
+        ),
+        CheckConstraint(
+            "(decision = 'APPROVED' AND comment IS NULL) OR "
+            "(decision = 'REJECTED' AND comment IS NOT NULL AND TRIM(comment) <> '')",
+            name="ck_contract_change_request_approvals_comment",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    change_request_id = Column(Integer, ForeignKey("contract_change_requests.id"), nullable=False, index=True)
+    approver_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    approver_side = Column(String(10), nullable=False)
+    decision = Column(String(10), nullable=False)
+    comment = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    change_request = relationship("ContractChangeRequest", back_populates="approvals")
+    approver_user = relationship("User", foreign_keys=[approver_user_id])
 
 
 class Deal(Base):

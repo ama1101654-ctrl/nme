@@ -1018,6 +1018,10 @@ export default function App(){
   const [selectedChangeRequest, setSelectedChangeRequest] = useState(null)
   const [changeRequestDetailLoading, setChangeRequestDetailLoading] = useState(false)
   const [changeRequestDetailError, setChangeRequestDetailError] = useState(null)
+  const [changeRequestActionLoading, setChangeRequestActionLoading] = useState(false)
+  const [changeRequestActionError, setChangeRequestActionError] = useState(null)
+  const [showRejectForm, setShowRejectForm] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState('')
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1060,6 +1064,19 @@ export default function App(){
   const isAuthGateVisible = !isAuthenticatedSession && !bootstrapAccess
   const currentUserCode = labelUserCode(activeUser.role)
   const currentUserDisplay = `${currentUserCode} #${activeUser.id}`
+  const contractApprovalSide = selectedContractDetail && activeUser.id === selectedContractDetail.buyer_id
+    ? 'BUYER'
+    : selectedContractDetail && activeUser.id === selectedContractDetail.seller_id
+      ? 'SELLER'
+      : null
+  const currentSideApproval = contractApprovalSide === 'BUYER'
+    ? selectedChangeRequest?.buyer_approval
+    : contractApprovalSide === 'SELLER'
+      ? selectedChangeRequest?.seller_approval
+      : null
+  const canDecideChangeRequest = Boolean(
+    selectedChangeRequest?.status === 'PENDING' && contractApprovalSide && !currentSideApproval
+  )
   const actionCenterTitle = isSeller ? '판매자가 해야 할 일' : isBuyerRole(activeUser.role) ? '내가 해야 할 일' : '사용자 액션 센터'
   const actionCenterDesc = isSeller ? '지금 판매자가 확인해야 하는 거래' : isBuyerRole(activeUser.role) ? '지금 처리해야 하는 거래' : '현재 사용자 기준으로 확인이 필요한 거래'
 
@@ -1733,6 +1750,9 @@ export default function App(){
     setChangeRequestsError(null)
     setSelectedChangeRequest(null)
     setChangeRequestDetailError(null)
+    setChangeRequestActionError(null)
+    setShowRejectForm(false)
+    setRejectionReason('')
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1819,6 +1839,9 @@ export default function App(){
   async function loadContractChangeRequestDetail(contractId, changeRequestId){
     setChangeRequestDetailLoading(true)
     setChangeRequestDetailError(null)
+    setChangeRequestActionError(null)
+    setShowRejectForm(false)
+    setRejectionReason('')
     setSelectedChangeRequest(null)
     try{
       const res = await authFetch(API + `/contracts/${contractId}/change-requests/${changeRequestId}`)
@@ -1833,6 +1856,53 @@ export default function App(){
       setChangeRequestDetailError(err?.message || 'Change Request 상세를 불러오지 못했습니다.')
     }finally{
       setChangeRequestDetailLoading(false)
+    }
+  }
+
+  async function refreshContractApprovalData(contractId, changeRequestId){
+    const [detailRes, revisionsRes, requestsRes] = await Promise.all([
+      authFetch(API + `/contracts/${contractId}/change-requests/${changeRequestId}`),
+      authFetch(API + `/contracts/${contractId}/revisions`),
+      authFetch(API + `/contracts/${contractId}/change-requests`),
+    ])
+    if(!detailRes.ok || !revisionsRes.ok || !requestsRes.ok){
+      throw new Error('승인 처리 후 계약 정보를 새로고침하지 못했습니다.')
+    }
+    setSelectedChangeRequest(await detailRes.json())
+    setContractRevisions(await revisionsRes.json())
+    setContractChangeRequests(await requestsRes.json())
+    if(selectedRevisionDetail){
+      await loadContractRevisionDetail(contractId, selectedRevisionDetail.revision_id)
+    }
+  }
+
+  async function decideContractChangeRequest(decision){
+    if(!selectedContractDetail || !selectedChangeRequest || changeRequestActionLoading) return
+    if(decision === 'reject' && !rejectionReason.trim()){
+      setChangeRequestActionError('거절 사유를 입력하세요.')
+      return
+    }
+    setChangeRequestActionLoading(true)
+    setChangeRequestActionError(null)
+    try{
+      const options = decision === 'reject'
+        ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({reason:rejectionReason.trim()})}
+        : {method:'POST'}
+      const res = await authFetch(
+        API + `/contracts/${selectedContractDetail.id}/change-requests/${selectedChangeRequest.change_request_id}/${decision}`,
+        options,
+      )
+      if(!res.ok){
+        const payload = await res.json().catch(()=>({detail:res.statusText}))
+        throw new Error(payload.detail || 'Change Request 처리에 실패했습니다.')
+      }
+      await refreshContractApprovalData(selectedContractDetail.id, selectedChangeRequest.change_request_id)
+      setShowRejectForm(false)
+      setRejectionReason('')
+    }catch(err){
+      setChangeRequestActionError(err?.message || 'Change Request 처리에 실패했습니다.')
+    }finally{
+      setChangeRequestActionLoading(false)
     }
   }
 
@@ -2904,12 +2974,41 @@ export default function App(){
                                   <h5>Change Request #{selectedChangeRequest.change_request_id} Detail</h5>
                                   <dl className="contract-grid">
                                     <div><dt>Status</dt><dd>{selectedChangeRequest.status === 'PENDING' ? '승인 대기' : formatContractValue(selectedChangeRequest.status)}</dd></div>
+                                    <div><dt>Buyer Approval</dt><dd>{selectedChangeRequest.buyer_approval?.decision || 'PENDING'}</dd></div>
+                                    <div><dt>Seller Approval</dt><dd>{selectedChangeRequest.seller_approval?.decision || 'PENDING'}</dd></div>
                                     <div><dt>Requested By</dt><dd>{formatContractValue(selectedChangeRequest.requested_by)}</dd></div>
                                     <div><dt>Base Revision</dt><dd>#{selectedChangeRequest.base_revision_no}</dd></div>
                                     <div><dt>Proposed Revision</dt><dd>#{selectedChangeRequest.proposed_revision_no} ({selectedChangeRequest.proposed_revision_status})</dd></div>
                                     <div><dt>Reason</dt><dd>{selectedChangeRequest.reason}</dd></div>
+                                    <div><dt>Decision</dt><dd>{selectedChangeRequest.status === 'PENDING' ? '-' : selectedChangeRequest.status}</dd></div>
+                                    <div><dt>Rejection Reason</dt><dd>{formatContractValue(selectedChangeRequest.rejection_reason)}</dd></div>
                                     <div><dt>Created At</dt><dd>{formatDateTime(selectedChangeRequest.created_at)}</dd></div>
                                   </dl>
+                                  {changeRequestActionError && <div className="error-msg">{changeRequestActionError}</div>}
+                                  {canDecideChangeRequest && !showRejectForm && (
+                                    <div className="change-request-actions">
+                                      <button onClick={()=> decideContractChangeRequest('approve')} disabled={changeRequestActionLoading}>
+                                        {contractApprovalSide === 'BUYER' ? 'Buyer 승인' : 'Seller 승인'}
+                                      </button>
+                                      <button className="secondary" onClick={()=> setShowRejectForm(true)} disabled={changeRequestActionLoading}>거절</button>
+                                    </div>
+                                  )}
+                                  {canDecideChangeRequest && showRejectForm && (
+                                    <div className="change-request-reject-form">
+                                      <label htmlFor="change-request-rejection-reason">Reject Change Request</label>
+                                      <textarea
+                                        id="change-request-rejection-reason"
+                                        value={rejectionReason}
+                                        maxLength={500}
+                                        onChange={event=> setRejectionReason(event.target.value)}
+                                        placeholder="Reason"
+                                      />
+                                      <div className="change-request-actions">
+                                        <button className="secondary" onClick={()=> { setShowRejectForm(false); setRejectionReason('') }} disabled={changeRequestActionLoading}>Cancel</button>
+                                        <button onClick={()=> decideContractChangeRequest('reject')} disabled={changeRequestActionLoading || !rejectionReason.trim()}>Reject</button>
+                                      </div>
+                                    </div>
+                                  )}
                                   <div className="trade-table-wrap">
                                     <table className="trade-table terms-comparison">
                                       <thead><tr><th>Term</th><th>Current</th><th>Proposed</th></tr></thead>

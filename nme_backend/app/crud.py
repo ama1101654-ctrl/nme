@@ -4,7 +4,7 @@ from sqlalchemy import func, or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -327,6 +327,76 @@ def create_contract_change_request(
         status="PENDING",
     )
     db.add(change_request)
+    db.flush()
+    return change_request
+
+
+def get_contract_change_request_approval(db: Session, change_request_id: int, approver_side: str):
+    """Return an immutable decision already recorded for one party side."""
+    return (
+        db.query(ContractChangeRequestApproval)
+        .filter(
+            ContractChangeRequestApproval.change_request_id == change_request_id,
+            ContractChangeRequestApproval.approver_side == approver_side,
+        )
+        .first()
+    )
+
+
+def stage_contract_change_request_approval(
+    db: Session,
+    change_request: ContractChangeRequest,
+    approver_user_id: int,
+    approver_side: str,
+):
+    """Stage one approval and finalize revisions only after both sides approve."""
+    approval = ContractChangeRequestApproval(
+        change_request_id=change_request.id,
+        approver_user_id=approver_user_id,
+        approver_side=approver_side,
+        decision="APPROVED",
+    )
+    db.add(approval)
+    db.flush()
+
+    approved_sides = {
+        row.approver_side
+        for row in db.query(ContractChangeRequestApproval)
+        .filter(
+            ContractChangeRequestApproval.change_request_id == change_request.id,
+            ContractChangeRequestApproval.decision == "APPROVED",
+        )
+        .all()
+    }
+    if approved_sides == {"BUYER", "SELLER"}:
+        base_revision = change_request.base_revision
+        proposed_revision = change_request.proposed_revision
+        if base_revision.revision_status != "ACTIVE" or proposed_revision.revision_status != "DRAFT":
+            raise ValueError("Change request revisions are not eligible for approval")
+        base_revision.revision_status = "SUPERSEDED"
+        proposed_revision.revision_status = "ACTIVE"
+        change_request.status = "APPROVED"
+        db.flush()
+    return change_request
+
+
+def stage_contract_change_request_rejection(
+    db: Session,
+    change_request: ContractChangeRequest,
+    approver_user_id: int,
+    approver_side: str,
+    reason: str,
+):
+    """Stage one immutable rejection while leaving both revisions unchanged."""
+    rejection = ContractChangeRequestApproval(
+        change_request_id=change_request.id,
+        approver_user_id=approver_user_id,
+        approver_side=approver_side,
+        decision="REJECTED",
+        comment=reason,
+    )
+    db.add(rejection)
+    change_request.status = "REJECTED"
     db.flush()
     return change_request
 

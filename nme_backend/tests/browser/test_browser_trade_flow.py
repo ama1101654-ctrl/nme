@@ -356,14 +356,15 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
         )
         db.add(proposed_revision)
         db.flush()
-        db.add(ContractChangeRequest(
+        change_request = ContractChangeRequest(
             contract_id=contract.id,
             base_revision_id=base_revision.revision_id,
             proposed_revision_id=proposed_revision.revision_id,
             requested_by_user_id=seeded_ids['buyer_id'],
             reason='Update brand and delivery location',
             status='PENDING',
-        ))
+        )
+        db.add(change_request)
         missing_buy_order = Order(
             product_id=seeded_ids['product_id'],
             buyer_id=seeded_ids['buyer_id'],
@@ -396,6 +397,7 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
         trade_id = trade.id
         missing_contract_trade_id = missing_contract_trade.id
         contract_no = contract.contract_no
+        change_request_id = change_request.id
 
     open_authenticated_session(page, browser_frontend_url, seeded_ids['buyer_id'])
     page.get_by_role('button', name='거래 이력').click()
@@ -433,7 +435,31 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(page.locator('.terms-comparison')).to_contain_text('Incheon')
     expect(page.locator('.terms-comparison')).to_contain_text('Busan')
     expect(page.locator('.terms-comparison')).to_contain_text('T/T Korean Dollar')
-    expect(page.get_by_role('button', name=re.compile('Edit|Delete|Approve|Reject|Apply|Finalize|Activate|Cancel|Modify Terms'))).to_have_count(0)
+    expect(page.locator('.change-request-detail')).to_contain_text('Buyer Approval')
+    expect(page.locator('.change-request-detail')).to_contain_text('Seller Approval')
+    page.get_by_role('button', name='거절').click()
+    expect(page.get_by_label('Reject Change Request')).to_be_visible()
+    expect(page.get_by_role('button', name='Reject', exact=True)).to_be_disabled()
+    page.get_by_role('button', name='Cancel', exact=True).click()
+    page.get_by_role('button', name='Buyer 승인').click()
+    expect(page.locator('.change-request-detail')).to_contain_text('APPROVED')
+    expect(page.locator('.change-request-detail')).to_contain_text('Seller Approval')
+    expect(page.get_by_role('button', name='Buyer 승인')).to_have_count(0)
+
+    seller_page = page.context.new_page()
+    open_authenticated_session(seller_page, browser_frontend_url, seeded_ids['seller_id'])
+    seller_page.get_by_role('button', name='거래 이력').click()
+    seller_page.get_by_role('button', name='보기').nth(1).click()
+    seller_page.locator('.change-request-table').get_by_role('button', name='보기').click()
+    expect(seller_page.get_by_role('heading', name=f'Change Request #{change_request_id} Detail')).to_be_visible()
+    seller_page.get_by_role('button', name='Seller 승인').click()
+    expect(seller_page.locator('.change-request-detail')).to_contain_text('DecisionAPPROVED')
+    expect(seller_page.locator('.change-request-detail')).to_contain_text('Proposed Revision#2 (ACTIVE)')
+    revision_rows = seller_page.locator('.revision-table tbody tr')
+    expect(revision_rows.nth(0)).to_contain_text('SUPERSEDED')
+    expect(revision_rows.nth(1)).to_contain_text('ACTIVE')
+    expect(seller_page.get_by_role('button', name=re.compile('Buyer 승인|Seller 승인|Reject'))).to_have_count(0)
+    seller_page.close()
 
 
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):

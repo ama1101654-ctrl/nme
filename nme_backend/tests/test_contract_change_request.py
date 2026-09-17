@@ -1,5 +1,10 @@
 from app.database import SessionLocal
-from app.models import Contract, ContractChangeRequest, ContractRevision, Order, Product, Trade, User
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from app import crud
+from app.models import Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractRevision, Order, Product, Trade, User
 
 
 TERMS = (
@@ -242,3 +247,208 @@ def test_change_request_requires_existing_base_revision(client):
         json={"reason": "No base", "brand": "NEW"},
     )
     assert response.status_code == 422
+
+
+def create_pending_request(client, contract_id, headers=None):
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests",
+        headers=headers or login_headers(client, "bob@example.com"),
+        json={"reason": "Update payment", "payment_term": "L/C"},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_buyer_approve_keeps_request_pending(client):
+    contract_id, base_revision_id = create_contract_with_revision()
+    buyer_headers = login_headers(client, "bob@example.com")
+    request = create_pending_request(client, contract_id, buyer_headers)
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/approve",
+        headers=buyer_headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "PENDING"
+    assert body["buyer_approval"]["decision"] == "APPROVED"
+    assert body["buyer_approval"]["approver_side"] == "BUYER"
+    assert body["seller_approval"] is None
+    with SessionLocal() as db:
+        assert db.get(ContractRevision, base_revision_id).revision_status == "ACTIVE"
+        assert db.get(ContractRevision, request["proposed_revision_id"]).revision_status == "DRAFT"
+
+
+def test_seller_approve_keeps_request_pending(client):
+    contract_id, base_revision_id = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/approve",
+        headers=login_headers(client, "charlie@example.com"),
+    )
+    assert response.status_code == 200
+    assert response.json()["seller_approval"]["decision"] == "APPROVED"
+    assert response.json()["buyer_approval"] is None
+    assert response.json()["status"] == "PENDING"
+    with SessionLocal() as db:
+        assert db.get(ContractRevision, base_revision_id).revision_status == "ACTIVE"
+
+
+def test_both_approvals_finalize_revision_atomically(client):
+    contract_id, base_revision_id = create_contract_with_revision()
+    contract_before = row_snapshot(Contract, contract_id)
+    request = create_pending_request(client, contract_id)
+    request_id = request["change_request_id"]
+    buyer_headers = login_headers(client, "bob@example.com")
+    seller_headers = login_headers(client, "charlie@example.com")
+    assert client.post(
+        f"/contracts/{contract_id}/change-requests/{request_id}/approve", headers=buyer_headers
+    ).status_code == 200
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests/{request_id}/approve", headers=seller_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "APPROVED"
+    assert body["buyer_approval"]["decision"] == "APPROVED"
+    assert body["seller_approval"]["decision"] == "APPROVED"
+    assert body["decided_at"] is not None
+    assert body["proposed_revision_status"] == "ACTIVE"
+    with SessionLocal() as db:
+        assert db.get(ContractRevision, base_revision_id).revision_status == "SUPERSEDED"
+        assert db.get(ContractRevision, request["proposed_revision_id"]).revision_status == "ACTIVE"
+        active_count = db.query(ContractRevision).filter(
+            ContractRevision.contract_id == contract_id,
+            ContractRevision.revision_status == "ACTIVE",
+        ).count()
+        assert active_count == 1
+    assert row_snapshot(Contract, contract_id) == contract_before
+
+
+def test_reject_preserves_reason_and_revision_statuses(client):
+    contract_id, base_revision_id = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/reject",
+        headers=login_headers(client, "charlie@example.com"),
+        json={"reason": " Delivery location must remain unchanged. "},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "REJECTED"
+    assert body["seller_approval"]["decision"] == "REJECTED"
+    assert body["rejection_reason"] == "Delivery location must remain unchanged."
+    assert body["decided_at"] is not None
+    with SessionLocal() as db:
+        assert db.get(ContractRevision, base_revision_id).revision_status == "ACTIVE"
+        assert db.get(ContractRevision, request["proposed_revision_id"]).revision_status == "DRAFT"
+
+
+def test_blank_rejection_reason_is_rejected(client):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    response = client.post(
+        f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/reject",
+        headers=login_headers(client, "bob@example.com"),
+        json={"reason": "   "},
+    )
+    assert response.status_code == 422
+    with SessionLocal() as db:
+        assert db.get(ContractChangeRequest, request["change_request_id"]).status == "PENDING"
+        assert db.query(ContractChangeRequestApproval).count() == 0
+
+
+def test_approval_requires_auth_and_actual_contract_party(client):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    path = f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/approve"
+    assert client.post(path).status_code == 401
+    with SessionLocal() as db:
+        db.add(User(company_name="Admin", name="Admin", email="admin@example.com", password="secret", role="ADMIN"))
+        db.add(User(company_name="Other", name="Other", email="outsider@example.com", password="secret", role="BUYER"))
+        db.commit()
+    assert client.post(path, headers=login_headers(client, "outsider@example.com")).status_code == 403
+    assert client.post(path, headers=login_headers(client, "admin@example.com")).status_code == 403
+
+
+@pytest.mark.parametrize("email", ["bob@example.com", "charlie@example.com"])
+def test_duplicate_side_approval_is_blocked(client, email):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    headers = login_headers(client, email)
+    path = f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/approve"
+    assert client.post(path, headers=headers).status_code == 200
+    assert client.post(path, headers=headers).status_code == 409
+
+
+def test_approved_request_cannot_be_decided_again(client):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    path = f"/contracts/{contract_id}/change-requests/{request['change_request_id']}"
+    buyer_headers = login_headers(client, "bob@example.com")
+    seller_headers = login_headers(client, "charlie@example.com")
+    assert client.post(f"{path}/approve", headers=buyer_headers).status_code == 200
+    assert client.post(f"{path}/approve", headers=seller_headers).status_code == 200
+    assert client.post(f"{path}/approve", headers=buyer_headers).status_code == 409
+    assert client.post(f"{path}/reject", headers=seller_headers, json={"reason": "Late"}).status_code == 409
+
+
+def test_rejected_request_cannot_be_decided_again(client):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    path = f"/contracts/{contract_id}/change-requests/{request['change_request_id']}"
+    buyer_headers = login_headers(client, "bob@example.com")
+    seller_headers = login_headers(client, "charlie@example.com")
+    assert client.post(f"{path}/reject", headers=buyer_headers, json={"reason": "No"}).status_code == 200
+    assert client.post(f"{path}/approve", headers=seller_headers).status_code == 409
+    assert client.post(f"{path}/reject", headers=seller_headers, json={"reason": "Still no"}).status_code == 409
+
+
+def test_forced_finalization_failure_rolls_back_second_approval(client, monkeypatch):
+    contract_id, base_revision_id = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    request_id = request["change_request_id"]
+    assert client.post(
+        f"/contracts/{contract_id}/change-requests/{request_id}/approve",
+        headers=login_headers(client, "bob@example.com"),
+    ).status_code == 200
+    original = crud.stage_contract_change_request_approval
+
+    def fail_after_staging(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("forced finalization failure")
+
+    monkeypatch.setattr(crud, "stage_contract_change_request_approval", fail_after_staging)
+    with pytest.raises(RuntimeError, match="forced finalization failure"):
+        client.post(
+            f"/contracts/{contract_id}/change-requests/{request_id}/approve",
+            headers=login_headers(client, "charlie@example.com"),
+        )
+    with SessionLocal() as db:
+        change_request = db.get(ContractChangeRequest, request_id)
+        assert change_request.status == "PENDING"
+        assert db.get(ContractRevision, base_revision_id).revision_status == "ACTIVE"
+        assert db.get(ContractRevision, request["proposed_revision_id"]).revision_status == "DRAFT"
+        assert db.query(ContractChangeRequestApproval).filter(
+            ContractChangeRequestApproval.change_request_id == request_id
+        ).count() == 1
+
+
+def test_concurrent_buyer_and_seller_approval_finishes_consistently(client):
+    contract_id, _ = create_contract_with_revision()
+    request = create_pending_request(client, contract_id)
+    path = f"/contracts/{contract_id}/change-requests/{request['change_request_id']}/approve"
+    buyer_headers = login_headers(client, "bob@example.com")
+    seller_headers = login_headers(client, "charlie@example.com")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda headers: client.post(path, headers=headers), [buyer_headers, seller_headers]))
+    assert sorted(response.status_code for response in responses) == [200, 200]
+    with SessionLocal() as db:
+        change_request = db.get(ContractChangeRequest, request["change_request_id"])
+        assert change_request.status == "APPROVED"
+        assert db.query(ContractChangeRequestApproval).filter(
+            ContractChangeRequestApproval.change_request_id == request["change_request_id"]
+        ).count() == 2
+        assert db.query(ContractRevision).filter(
+            ContractRevision.contract_id == contract_id,
+            ContractRevision.revision_status == "ACTIVE",
+        ).count() == 1
