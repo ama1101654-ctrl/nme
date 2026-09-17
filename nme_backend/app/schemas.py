@@ -351,6 +351,13 @@ class ContractResponse(BaseModel):
     currency: Literal["KRW"]
     total_value: int
     status: Literal["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"]
+    brand: str | None = None
+    tolerance: str | None = None
+    quotation_period: str | None = None
+    delivery_term: str | None = None
+    delivery_location: str | None = None
+    payment_term: str | None = None
+    partial_delivery: Literal["YES", "NO"] | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -91,6 +91,13 @@ def test_contract_snapshot_is_server_derived_and_sources_are_unchanged(client):
     assert body['currency'] == 'KRW'
     assert body['total_value'] == 100000
     assert body['status'] == 'DRAFT'
+    assert body['brand'] is None
+    assert body['tolerance'] is None
+    assert body['quotation_period'] is None
+    assert body['delivery_term'] is None
+    assert body['delivery_location'] is None
+    assert body['payment_term'] is None
+    assert body['partial_delivery'] is None
     assert body['buyer_id'] != 999999
     assert body['seller_id'] != 999999
     assert body['contract_no'].startswith('NME-CT-')
@@ -99,6 +106,52 @@ def test_contract_snapshot_is_server_derived_and_sources_are_unchanged(client):
     assert row_snapshot(Order, sell_order_id) == before['sell']
     assert row_snapshot(Product, product_id) == before['product']
     assert inventory_snapshot() == before['inventory']
+
+
+def test_contract_terms_snapshot_is_returned_by_all_get_apis(client):
+    trade_id, buy_order_id, sell_order_id, product_id = create_trade_graph()
+    headers = login_headers(client, 'bob@example.com')
+    terms = {
+        'brand': 'PMB',
+        'tolerance': '+/-2%',
+        'quotation_period': 'Unknown On Day',
+        'delivery_term': 'CIF',
+        'delivery_location': 'Incheon',
+        'payment_term': 'T/T Korean Dollar',
+        'partial_delivery': 'YES',
+    }
+    with SessionLocal() as db:
+        trade = db.query(Trade).filter(Trade.id == trade_id).one()
+        buy_order = db.query(Order).filter(Order.id == buy_order_id).one()
+        sell_order = db.query(Order).filter(Order.id == sell_order_id).one()
+        contract = Contract(
+            contract_no=f'NME-CT-{trade.created_at.year}-{trade.id:010d}',
+            trade_id=trade.id,
+            product_id=product_id,
+            buyer_id=buy_order.buyer_id,
+            seller_id=sell_order.seller_id,
+            quantity=trade.quantity,
+            unit='TON',
+            price=trade.price,
+            currency='KRW',
+            total_value=trade.quantity * trade.price,
+            status='DRAFT',
+            **terms,
+        )
+        db.add(contract)
+        db.commit()
+        contract_id = contract.id
+
+    detail = client.get(f'/contracts/{contract_id}', headers=headers)
+    trade_detail = client.get(f'/trades/{trade_id}/contract', headers=headers)
+    listing = client.get('/contracts', headers=headers)
+    assert detail.status_code == 200
+    assert trade_detail.status_code == 200
+    assert listing.status_code == 200
+    for key, value in terms.items():
+        assert detail.json()[key] == value
+        assert trade_detail.json()[key] == value
+        assert listing.json()[0][key] == value
 
 
 def test_contract_auth_visibility_duplicate_and_missing_resources(client):
@@ -239,6 +292,14 @@ def test_contract_database_foreign_key_unique_and_check_constraints():
         {'currency': ' '},
         {'total_value': 0},
         {'status': 'UNKNOWN'},
+        {'brand': ' '},
+        {'brand': 'B' * 101},
+        {'tolerance': ' '},
+        {'quotation_period': 'Q' * 201},
+        {'delivery_term': ' '},
+        {'delivery_location': 'L' * 201},
+        {'payment_term': ' '},
+        {'partial_delivery': 'MAYBE'},
     ]
     for index, overrides in enumerate(invalid_overrides):
         with SessionLocal() as db:
@@ -265,6 +326,8 @@ def test_contract_response_schema_is_exact(client):
     expected_fields = {
         'id', 'contract_no', 'trade_id', 'product_id', 'buyer_id', 'seller_id',
         'quantity', 'unit', 'price', 'currency', 'total_value', 'status',
+        'brand', 'tolerance', 'quotation_period', 'delivery_term',
+        'delivery_location', 'payment_term', 'partial_delivery',
         'created_at', 'updated_at',
     }
     assert set(response.json()) == expected_fields

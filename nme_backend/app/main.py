@@ -209,10 +209,37 @@ def ensure_product_reserved_quantity_column():
         conn.commit()
 
 
+def ensure_contract_terms_columns():
+    """Add nullable Contract Terms without changing existing contract rows."""
+    terms = {
+        'brand': "VARCHAR(100) CHECK (brand IS NULL OR (TRIM(brand) <> '' AND LENGTH(brand) <= 100))",
+        'tolerance': "VARCHAR(100) CHECK (tolerance IS NULL OR (TRIM(tolerance) <> '' AND LENGTH(tolerance) <= 100))",
+        'quotation_period': "VARCHAR(200) CHECK (quotation_period IS NULL OR (TRIM(quotation_period) <> '' AND LENGTH(quotation_period) <= 200))",
+        'delivery_term': "VARCHAR(100) CHECK (delivery_term IS NULL OR (TRIM(delivery_term) <> '' AND LENGTH(delivery_term) <= 100))",
+        'delivery_location': "VARCHAR(200) CHECK (delivery_location IS NULL OR (TRIM(delivery_location) <> '' AND LENGTH(delivery_location) <= 200))",
+        'payment_term': "VARCHAR(200) CHECK (payment_term IS NULL OR (TRIM(payment_term) <> '' AND LENGTH(payment_term) <= 200))",
+        'partial_delivery': "VARCHAR(3) CHECK (partial_delivery IS NULL OR partial_delivery IN ('YES', 'NO'))",
+    }
+    with engine.connect() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='contracts'")
+        ).scalar()
+        if table_exists is None:
+            return
+
+        rows = conn.execute(text("PRAGMA table_info(contracts)")).fetchall()
+        column_names = {row[1] for row in rows}
+        for column_name, definition in terms.items():
+            if column_name not in column_names:
+                conn.execute(text(f"ALTER TABLE contracts ADD COLUMN {column_name} {definition}"))
+        conn.commit()
+
+
 ensure_auth_sessions_last_used_at_column()
 ensure_order_schema_columns()
 ensure_trade_table()
 ensure_product_reserved_quantity_column()
+ensure_contract_terms_columns()
 
 app = FastAPI(title="NME Backend", version="0.1.0")
 bearer_scheme = HTTPBearer(auto_error=False)

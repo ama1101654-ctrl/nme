@@ -345,6 +345,34 @@ class Contract(Base):
         CheckConstraint("TRIM(currency) <> ''", name="ck_contracts_currency_not_blank"),
         CheckConstraint("total_value > 0", name="ck_contracts_total_value_positive"),
         CheckConstraint(
+            "brand IS NULL OR (TRIM(brand) <> '' AND LENGTH(brand) <= 100)",
+            name="ck_contracts_brand",
+        ),
+        CheckConstraint(
+            "tolerance IS NULL OR (TRIM(tolerance) <> '' AND LENGTH(tolerance) <= 100)",
+            name="ck_contracts_tolerance",
+        ),
+        CheckConstraint(
+            "quotation_period IS NULL OR (TRIM(quotation_period) <> '' AND LENGTH(quotation_period) <= 200)",
+            name="ck_contracts_quotation_period",
+        ),
+        CheckConstraint(
+            "delivery_term IS NULL OR (TRIM(delivery_term) <> '' AND LENGTH(delivery_term) <= 100)",
+            name="ck_contracts_delivery_term",
+        ),
+        CheckConstraint(
+            "delivery_location IS NULL OR (TRIM(delivery_location) <> '' AND LENGTH(delivery_location) <= 200)",
+            name="ck_contracts_delivery_location",
+        ),
+        CheckConstraint(
+            "payment_term IS NULL OR (TRIM(payment_term) <> '' AND LENGTH(payment_term) <= 200)",
+            name="ck_contracts_payment_term",
+        ),
+        CheckConstraint(
+            "partial_delivery IS NULL OR partial_delivery IN ('YES', 'NO')",
+            name="ck_contracts_partial_delivery",
+        ),
+        CheckConstraint(
             "status IN ('DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED')",
             name="ck_contracts_status",
         ),
@@ -362,6 +390,13 @@ class Contract(Base):
     currency = Column(String(10), nullable=False, default="KRW")
     total_value = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="DRAFT")
+    brand = Column(String(100), nullable=True)
+    tolerance = Column(String(100), nullable=True)
+    quotation_period = Column(String(200), nullable=True)
+    delivery_term = Column(String(100), nullable=True)
+    delivery_location = Column(String(200), nullable=True)
+    payment_term = Column(String(200), nullable=True)
+    partial_delivery = Column(String(3), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
