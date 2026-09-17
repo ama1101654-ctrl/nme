@@ -40,6 +40,8 @@ from .schemas import (
     TradeHistoryEntry,
     TradeResponse,
     ContractResponse,
+    ContractRevisionResponse,
+    ContractRevisionSummaryResponse,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
@@ -246,6 +248,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 SELL_RESERVATION_LOCK = Lock()
 MATCHING_LOCK = Lock()
 CONTRACT_CREATION_LOCK = Lock()
+CONTRACT_REVISION_CREATION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -1678,6 +1681,75 @@ def read_trade_contract(
         raise HTTPException(status_code=404, detail="Contract not found")
     _require_contract_access(contract, current_user)
     return contract
+
+
+@app.post(
+    "/contracts/{contract_id}/revisions",
+    response_model=ContractRevisionResponse,
+    tags=["contract-revisions"],
+)
+def create_contract_revision(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create the next immutable snapshot of the current Contract."""
+    with CONTRACT_REVISION_CREATION_LOCK:
+        try:
+            contract = crud.get_contract(db=db, contract_id=contract_id)
+            if contract is None:
+                raise HTTPException(status_code=404, detail="Contract not found")
+            _require_contract_access(contract, current_user)
+            revision = crud.create_contract_revision(db=db, contract=contract)
+            db.commit()
+            db.refresh(revision)
+            return revision
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Contract revision already exists") from exc
+
+
+@app.get(
+    "/contracts/{contract_id}/revisions",
+    response_model=list[ContractRevisionSummaryResponse],
+    tags=["contract-revisions"],
+)
+def read_contract_revisions(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read revision history for an accessible Contract."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    return crud.get_contract_revisions(db=db, contract_id=contract_id)
+
+
+@app.get(
+    "/contracts/{contract_id}/revisions/{revision_id}",
+    response_model=ContractRevisionResponse,
+    tags=["contract-revisions"],
+)
+def read_contract_revision(
+    contract_id: int,
+    revision_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read one immutable Contract Revision snapshot."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    revision = crud.get_contract_revision(db=db, contract_id=contract_id, revision_id=revision_id)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Contract revision not found")
+    return revision
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

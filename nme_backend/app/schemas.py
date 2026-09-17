@@ -364,6 +364,37 @@ class ContractResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ContractRevisionSummaryResponse(BaseModel):
+    revision_id: int
+    contract_id: int
+    revision_no: int
+    revision_status: Literal["DRAFT", "ACTIVE", "SUPERSEDED"]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContractRevisionResponse(ContractRevisionSummaryResponse):
+    contract_no: str
+    trade_id: int
+    product_id: int
+    buyer_id: int
+    seller_id: int
+    quantity: int
+    unit: str
+    price: int
+    currency: Literal["KRW"]
+    total_value: int
+    status: Literal["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"]
+    brand: str | None = None
+    tolerance: str | None = None
+    quotation_period: str | None = None
+    delivery_term: str | None = None
+    delivery_location: str | None = None
+    payment_term: str | None = None
+    partial_delivery: Literal["YES", "NO"] | None = None
+
+
 class TradeResponse(BaseModel):
     trade_id: int
     product_id: int

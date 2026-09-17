@@ -159,6 +159,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 .contract-grid dt{font-size:12px;color:#45648a}
 .contract-grid dd{margin:3px 0 0;font-weight:700;color:#082240;overflow-wrap:anywhere}
 .contract-empty{margin-top:10px;padding:12px;background:#fff;border-left:3px solid #8fb8ff;color:#45648a}
+.revision-table{margin-top:8px}
+.revision-detail{margin-top:14px;padding:12px;border-left:3px solid #0b69ff;background:#fff}
+.revision-detail h5{margin-bottom:12px}
 .todo-box{background:#eaf2ff;border-color:#cfe1ff}
 .todo-box.tone-required{background:#e7f2ff;border-color:#9fc3ff}
 .todo-box.tone-waiting{background:#eef4ff;border-color:#d3e2ff}

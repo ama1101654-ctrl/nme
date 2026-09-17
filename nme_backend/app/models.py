@@ -404,6 +404,64 @@ class Contract(Base):
     product = relationship("Product")
     buyer = relationship("User", foreign_keys=[buyer_id])
     seller = relationship("User", foreign_keys=[seller_id])
+    revisions = relationship("ContractRevision", back_populates="contract", order_by="ContractRevision.revision_no")
+
+
+class ContractRevision(Base):
+    """Immutable point-in-time snapshot of a Contract."""
+
+    __tablename__ = "contract_revisions"
+    __table_args__ = (
+        UniqueConstraint("contract_id", "revision_no", name="uq_contract_revisions_contract_no"),
+        CheckConstraint("revision_no > 0", name="ck_contract_revisions_no_positive"),
+        CheckConstraint(
+            "revision_status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')",
+            name="ck_contract_revisions_status",
+        ),
+        CheckConstraint("TRIM(contract_no) <> ''", name="ck_contract_revisions_contract_no_not_blank"),
+        CheckConstraint("quantity > 0", name="ck_contract_revisions_quantity_positive"),
+        CheckConstraint("TRIM(unit) <> ''", name="ck_contract_revisions_unit_not_blank"),
+        CheckConstraint("price > 0", name="ck_contract_revisions_price_positive"),
+        CheckConstraint("TRIM(currency) <> ''", name="ck_contract_revisions_currency_not_blank"),
+        CheckConstraint("total_value > 0", name="ck_contract_revisions_total_value_positive"),
+        CheckConstraint("brand IS NULL OR (TRIM(brand) <> '' AND LENGTH(brand) <= 100)", name="ck_contract_revisions_brand"),
+        CheckConstraint("tolerance IS NULL OR (TRIM(tolerance) <> '' AND LENGTH(tolerance) <= 100)", name="ck_contract_revisions_tolerance"),
+        CheckConstraint("quotation_period IS NULL OR (TRIM(quotation_period) <> '' AND LENGTH(quotation_period) <= 200)", name="ck_contract_revisions_quotation_period"),
+        CheckConstraint("delivery_term IS NULL OR (TRIM(delivery_term) <> '' AND LENGTH(delivery_term) <= 100)", name="ck_contract_revisions_delivery_term"),
+        CheckConstraint("delivery_location IS NULL OR (TRIM(delivery_location) <> '' AND LENGTH(delivery_location) <= 200)", name="ck_contract_revisions_delivery_location"),
+        CheckConstraint("payment_term IS NULL OR (TRIM(payment_term) <> '' AND LENGTH(payment_term) <= 200)", name="ck_contract_revisions_payment_term"),
+        CheckConstraint("partial_delivery IS NULL OR partial_delivery IN ('YES', 'NO')", name="ck_contract_revisions_partial_delivery"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED')",
+            name="ck_contract_revisions_contract_status",
+        ),
+    )
+
+    revision_id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False, index=True)
+    revision_no = Column(Integer, nullable=False)
+    revision_status = Column(String(20), nullable=False, default="DRAFT")
+    contract_no = Column(String(50), nullable=False)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    unit = Column(String(20), nullable=False)
+    price = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=False)
+    total_value = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False)
+    brand = Column(String(100), nullable=True)
+    tolerance = Column(String(100), nullable=True)
+    quotation_period = Column(String(200), nullable=True)
+    delivery_term = Column(String(100), nullable=True)
+    delivery_location = Column(String(200), nullable=True)
+    payment_term = Column(String(200), nullable=True)
+    partial_delivery = Column(String(3), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    contract = relationship("Contract", back_populates="revisions")
 
 
 class Deal(Base):

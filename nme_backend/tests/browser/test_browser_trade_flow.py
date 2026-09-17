@@ -8,7 +8,7 @@ from playwright.sync_api import expect
 
 from app.database import SessionLocal
 from app.main import create_access_token
-from app.models import Company, CompanyMember, Contract, InvestorProfile, MemberProfile, Order, Trade, User
+from app.models import Company, CompanyMember, Contract, ContractRevision, InvestorProfile, MemberProfile, Order, Trade, User
 
 
 pytestmark = pytest.mark.browser
@@ -305,6 +305,30 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
             partial_delivery='YES',
         )
         db.add(contract)
+        db.flush()
+        db.add(ContractRevision(
+            contract_id=contract.id,
+            revision_no=1,
+            revision_status='DRAFT',
+            contract_no=contract.contract_no,
+            trade_id=contract.trade_id,
+            product_id=contract.product_id,
+            buyer_id=contract.buyer_id,
+            seller_id=contract.seller_id,
+            quantity=contract.quantity,
+            unit=contract.unit,
+            price=contract.price,
+            currency=contract.currency,
+            total_value=contract.total_value,
+            status=contract.status,
+            brand=contract.brand,
+            tolerance=contract.tolerance,
+            quotation_period=contract.quotation_period,
+            delivery_term=contract.delivery_term,
+            delivery_location=contract.delivery_location,
+            payment_term=contract.payment_term,
+            partial_delivery=contract.partial_delivery,
+        ))
         missing_buy_order = Order(
             product_id=seeded_ids['product_id'],
             buyer_id=seeded_ids['buyer_id'],
@@ -357,7 +381,13 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(page.locator('.contract-detail')).to_contain_text('Unknown On Day')
     expect(page.locator('.contract-detail')).to_contain_text('T/T Korean Dollar')
     expect(page.locator('.contract-grid > div', has_text='Tolerance').locator('dd')).to_have_text('-')
-    expect(page.locator('.contract-detail button')).to_have_count(0)
+    expect(page.get_by_role('heading', name='Revision History')).to_be_visible()
+    expect(page.locator('.revision-table')).to_contain_text('DRAFT')
+    page.locator('.revision-table').get_by_role('button', name='보기').click()
+    expect(page.get_by_role('heading', name='Revision #1 Detail')).to_be_visible()
+    expect(page.locator('.revision-detail')).to_contain_text('PMB')
+    expect(page.locator('.revision-detail')).to_contain_text('T/T Korean Dollar')
+    expect(page.get_by_role('button', name=re.compile('Edit|Delete|Approve|Reject|Apply Revision|Modify Terms'))).to_have_count(0)
 
 
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):

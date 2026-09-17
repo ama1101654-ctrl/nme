@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Contract, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -172,6 +172,63 @@ def create_contract_from_trade(db: Session, trade_id: int):
     db.add(contract)
     db.flush()
     return contract
+
+
+def get_contract_revisions(db: Session, contract_id: int):
+    """Return immutable snapshots for one Contract in revision order."""
+    return (
+        db.query(ContractRevision)
+        .filter(ContractRevision.contract_id == contract_id)
+        .order_by(ContractRevision.revision_no.asc())
+        .all()
+    )
+
+
+def get_contract_revision(db: Session, contract_id: int, revision_id: int):
+    """Return one immutable snapshot scoped to its Contract."""
+    return (
+        db.query(ContractRevision)
+        .filter(
+            ContractRevision.contract_id == contract_id,
+            ContractRevision.revision_id == revision_id,
+        )
+        .first()
+    )
+
+
+def create_contract_revision(db: Session, contract: Contract):
+    """Stage the next immutable snapshot using only server-owned Contract data."""
+    current_revision_no = (
+        db.query(func.max(ContractRevision.revision_no))
+        .filter(ContractRevision.contract_id == contract.id)
+        .scalar()
+    )
+    revision = ContractRevision(
+        contract_id=contract.id,
+        revision_no=(current_revision_no or 0) + 1,
+        revision_status="DRAFT",
+        contract_no=contract.contract_no,
+        trade_id=contract.trade_id,
+        product_id=contract.product_id,
+        buyer_id=contract.buyer_id,
+        seller_id=contract.seller_id,
+        quantity=contract.quantity,
+        unit=contract.unit,
+        price=contract.price,
+        currency=contract.currency,
+        total_value=contract.total_value,
+        status=contract.status,
+        brand=contract.brand,
+        tolerance=contract.tolerance,
+        quotation_period=contract.quotation_period,
+        delivery_term=contract.delivery_term,
+        delivery_location=contract.delivery_location,
+        payment_term=contract.payment_term,
+        partial_delivery=contract.partial_delivery,
+    )
+    db.add(revision)
+    db.flush()
+    return revision
 
 
 def get_warehouse_inventory(db: Session, warehouse_id: int):

@@ -1006,6 +1006,12 @@ export default function App(){
   const [contractDetailLoading, setContractDetailLoading] = useState(false)
   const [contractDetailError, setContractDetailError] = useState(null)
   const [contractNotFound, setContractNotFound] = useState(false)
+  const [contractRevisions, setContractRevisions] = useState([])
+  const [contractRevisionsLoading, setContractRevisionsLoading] = useState(false)
+  const [contractRevisionsError, setContractRevisionsError] = useState(null)
+  const [selectedRevisionDetail, setSelectedRevisionDetail] = useState(null)
+  const [revisionDetailLoading, setRevisionDetailLoading] = useState(false)
+  const [revisionDetailError, setRevisionDetailError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1713,6 +1719,10 @@ export default function App(){
     setContractDetailError(null)
     setContractNotFound(false)
     setSelectedContractDetail(null)
+    setContractRevisions([])
+    setContractRevisionsError(null)
+    setSelectedRevisionDetail(null)
+    setRevisionDetailError(null)
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1739,7 +1749,18 @@ export default function App(){
         setContractDetailError(j.detail || '계약 상세를 불러오지 못했습니다.')
         return
       }
-      setSelectedContractDetail(await contractRes.json())
+      const contract = await contractRes.json()
+      setSelectedContractDetail(contract)
+
+      setContractRevisionsLoading(true)
+      const revisionsRes = await authFetch(API + `/contracts/${contract.id}/revisions`)
+      if(!revisionsRes.ok){
+        const j = await revisionsRes.json().catch(()=>({detail: revisionsRes.statusText}))
+        setContractRevisionsError(j.detail || 'Revision 이력을 불러오지 못했습니다.')
+        return
+      }
+      const revisions = await revisionsRes.json()
+      setContractRevisions(Array.isArray(revisions) ? revisions : [])
     }catch(err){
       console.error('trade detail error', err)
       if(tradeLoaded){
@@ -1750,6 +1771,27 @@ export default function App(){
     }finally{
       setTradeDetailLoading(false)
       setContractDetailLoading(false)
+      setContractRevisionsLoading(false)
+    }
+  }
+
+  async function loadContractRevisionDetail(contractId, revisionId){
+    setRevisionDetailLoading(true)
+    setRevisionDetailError(null)
+    setSelectedRevisionDetail(null)
+    try{
+      const res = await authFetch(API + `/contracts/${contractId}/revisions/${revisionId}`)
+      if(!res.ok){
+        const j = await res.json().catch(()=>({detail: res.statusText}))
+        setRevisionDetailError(j.detail || 'Revision 상세를 불러오지 못했습니다.')
+        return
+      }
+      setSelectedRevisionDetail(await res.json())
+    }catch(err){
+      console.error('contract revision detail error', err)
+      setRevisionDetailError(err?.message || 'Revision 상세를 불러오지 못했습니다.')
+    }finally{
+      setRevisionDetailLoading(false)
     }
   }
 
@@ -2734,6 +2776,61 @@ export default function App(){
                               <div><dt>Payment Term</dt><dd>{formatContractValue(selectedContractDetail.payment_term)}</dd></div>
                               <div><dt>Partial Delivery</dt><dd>{formatContractValue(selectedContractDetail.partial_delivery)}</dd></div>
                             </dl>
+                          </section>
+                          <section className="contract-group revision-history">
+                            <h5>Revision History</h5>
+                            {contractRevisionsLoading && <div className="info">Revision 이력을 불러오는 중...</div>}
+                            {!contractRevisionsLoading && contractRevisionsError && <div className="error-msg">{contractRevisionsError}</div>}
+                            {!contractRevisionsLoading && !contractRevisionsError && contractRevisions.length === 0 && (
+                              <div className="contract-empty">No revisions available</div>
+                            )}
+                            {!contractRevisionsLoading && !contractRevisionsError && contractRevisions.length > 0 && (
+                              <div className="trade-table-wrap">
+                                <table className="trade-table revision-table">
+                                  <thead><tr><th>Revision No</th><th>Status</th><th>Created At</th><th>Detail</th></tr></thead>
+                                  <tbody>
+                                    {contractRevisions.map(revision => (
+                                      <tr key={revision.revision_id}>
+                                        <td>{revision.revision_no}</td>
+                                        <td>{formatContractValue(revision.revision_status)}</td>
+                                        <td>{formatDateTime(revision.created_at)}</td>
+                                        <td><button className="secondary" onClick={()=> loadContractRevisionDetail(selectedContractDetail.id, revision.revision_id)}>보기</button></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {revisionDetailLoading && <div className="info">Revision 상세를 불러오는 중...</div>}
+                            {!revisionDetailLoading && revisionDetailError && <div className="error-msg">{revisionDetailError}</div>}
+                            {!revisionDetailLoading && selectedRevisionDetail && (
+                              <div className="revision-detail">
+                                <h5>Revision #{selectedRevisionDetail.revision_no} Detail</h5>
+                                <dl className="contract-grid">
+                                  <div><dt>Revision ID</dt><dd>{formatContractValue(selectedRevisionDetail.revision_id)}</dd></div>
+                                  <div><dt>Revision Status</dt><dd>{formatContractValue(selectedRevisionDetail.revision_status)}</dd></div>
+                                  <div><dt>Created At</dt><dd>{formatDateTime(selectedRevisionDetail.created_at)}</dd></div>
+                                  <div><dt>Contract No</dt><dd>{formatContractValue(selectedRevisionDetail.contract_no)}</dd></div>
+                                  <div><dt>Trade ID</dt><dd>{formatContractValue(selectedRevisionDetail.trade_id)}</dd></div>
+                                  <div><dt>Product ID</dt><dd>{formatContractValue(selectedRevisionDetail.product_id)}</dd></div>
+                                  <div><dt>Buyer ID</dt><dd>{formatContractValue(selectedRevisionDetail.buyer_id)}</dd></div>
+                                  <div><dt>Seller ID</dt><dd>{formatContractValue(selectedRevisionDetail.seller_id)}</dd></div>
+                                  <div><dt>Quantity</dt><dd>{formatContractValue(selectedRevisionDetail.quantity)}</dd></div>
+                                  <div><dt>Unit</dt><dd>{formatContractValue(selectedRevisionDetail.unit)}</dd></div>
+                                  <div><dt>Price</dt><dd>{selectedRevisionDetail.price == null ? '-' : formatPrice(selectedRevisionDetail.price)}</dd></div>
+                                  <div><dt>Currency</dt><dd>{formatContractValue(selectedRevisionDetail.currency)}</dd></div>
+                                  <div><dt>Total Value</dt><dd>{selectedRevisionDetail.total_value == null ? '-' : formatPrice(selectedRevisionDetail.total_value)}</dd></div>
+                                  <div><dt>Contract Status</dt><dd>{formatContractValue(selectedRevisionDetail.status)}</dd></div>
+                                  <div><dt>Brand</dt><dd>{formatContractValue(selectedRevisionDetail.brand)}</dd></div>
+                                  <div><dt>Tolerance</dt><dd>{formatContractValue(selectedRevisionDetail.tolerance)}</dd></div>
+                                  <div><dt>Quotation Period</dt><dd>{formatContractValue(selectedRevisionDetail.quotation_period)}</dd></div>
+                                  <div><dt>Delivery Term</dt><dd>{formatContractValue(selectedRevisionDetail.delivery_term)}</dd></div>
+                                  <div><dt>Delivery Location</dt><dd>{formatContractValue(selectedRevisionDetail.delivery_location)}</dd></div>
+                                  <div><dt>Payment Term</dt><dd>{formatContractValue(selectedRevisionDetail.payment_term)}</dd></div>
+                                  <div><dt>Partial Delivery</dt><dd>{formatContractValue(selectedRevisionDetail.partial_delivery)}</dd></div>
+                                </dl>
+                              </div>
+                            )}
                           </section>
                         </div>
                       )}
