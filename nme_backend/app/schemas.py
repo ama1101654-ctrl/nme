@@ -395,6 +395,54 @@ class ContractRevisionResponse(ContractRevisionSummaryResponse):
     partial_delivery: Literal["YES", "NO"] | None = None
 
 
+class ContractChangeRequestCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    brand: str | None = Field(default=None, max_length=100)
+    tolerance: str | None = Field(default=None, max_length=100)
+    quotation_period: str | None = Field(default=None, max_length=200)
+    delivery_term: str | None = Field(default=None, max_length=100)
+    delivery_location: str | None = Field(default=None, max_length=200)
+    payment_term: str | None = Field(default=None, max_length=200)
+    partial_delivery: Literal["YES", "NO"] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator(
+        "reason", "brand", "tolerance", "quotation_period", "delivery_term",
+        "delivery_location", "payment_term",
+    )
+    @classmethod
+    def strip_non_blank_values(cls, value):
+        if value is None:
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+
+class ContractChangeRequestSummaryResponse(BaseModel):
+    change_request_id: int = Field(validation_alias="id")
+    contract_id: int
+    base_revision_id: int
+    proposed_revision_id: int
+    requested_by: int = Field(validation_alias="requested_by_user_id")
+    reason: str
+    status: Literal["PENDING", "APPROVED", "REJECTED", "CANCELLED"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContractChangeRequestDetailResponse(ContractChangeRequestSummaryResponse):
+    base_revision_no: int
+    proposed_revision_no: int
+    proposed_revision_status: Literal["DRAFT", "ACTIVE", "SUPERSEDED"]
+    base_revision: ContractRevisionResponse
+    proposed_revision: ContractRevisionResponse
+
+
 class TradeResponse(BaseModel):
     trade_id: int
     product_id: int

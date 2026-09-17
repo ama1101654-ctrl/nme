@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func
+from sqlalchemy import CheckConstraint, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func, text
 from sqlalchemy.orm import relationship, validates
 
 from .database import Base
@@ -405,6 +405,7 @@ class Contract(Base):
     buyer = relationship("User", foreign_keys=[buyer_id])
     seller = relationship("User", foreign_keys=[seller_id])
     revisions = relationship("ContractRevision", back_populates="contract", order_by="ContractRevision.revision_no")
+    change_requests = relationship("ContractChangeRequest", back_populates="contract", order_by="ContractChangeRequest.id")
 
 
 class ContractRevision(Base):
@@ -462,6 +463,56 @@ class ContractRevision(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     contract = relationship("Contract", back_populates="revisions")
+
+
+class ContractChangeRequest(Base):
+    """Approval-pending request linking an immutable base and proposed revision."""
+
+    __tablename__ = "contract_change_requests"
+    __table_args__ = (
+        CheckConstraint("TRIM(reason) <> ''", name="ck_contract_change_requests_reason_not_blank"),
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')",
+            name="ck_contract_change_requests_status",
+        ),
+        CheckConstraint(
+            "base_revision_id <> proposed_revision_id",
+            name="ck_contract_change_requests_distinct_revisions",
+        ),
+        Index(
+            "uq_contract_change_requests_pending_contract",
+            "contract_id",
+            unique=True,
+            sqlite_where=text("status = 'PENDING'"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False, index=True)
+    base_revision_id = Column(Integer, ForeignKey("contract_revisions.revision_id"), nullable=False, index=True)
+    proposed_revision_id = Column(Integer, ForeignKey("contract_revisions.revision_id"), nullable=False, unique=True, index=True)
+    requested_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    reason = Column(String(500), nullable=False)
+    status = Column(String(20), nullable=False, default="PENDING", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    contract = relationship("Contract", back_populates="change_requests")
+    base_revision = relationship("ContractRevision", foreign_keys=[base_revision_id])
+    proposed_revision = relationship("ContractRevision", foreign_keys=[proposed_revision_id])
+    requested_by_user = relationship("User", foreign_keys=[requested_by_user_id])
+
+    @property
+    def base_revision_no(self):
+        return self.base_revision.revision_no
+
+    @property
+    def proposed_revision_no(self):
+        return self.proposed_revision.revision_no
+
+    @property
+    def proposed_revision_status(self):
+        return self.proposed_revision.revision_status
 
 
 class Deal(Base):

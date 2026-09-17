@@ -42,6 +42,9 @@ from .schemas import (
     ContractResponse,
     ContractRevisionResponse,
     ContractRevisionSummaryResponse,
+    ContractChangeRequestCreate,
+    ContractChangeRequestDetailResponse,
+    ContractChangeRequestSummaryResponse,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
@@ -249,6 +252,7 @@ SELL_RESERVATION_LOCK = Lock()
 MATCHING_LOCK = Lock()
 CONTRACT_CREATION_LOCK = Lock()
 CONTRACT_REVISION_CREATION_LOCK = Lock()
+CONTRACT_CHANGE_REQUEST_CREATION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -1750,6 +1754,101 @@ def read_contract_revision(
     if revision is None:
         raise HTTPException(status_code=404, detail="Contract revision not found")
     return revision
+
+
+@app.post(
+    "/contracts/{contract_id}/change-requests",
+    response_model=ContractChangeRequestDetailResponse,
+    tags=["contract-change-requests"],
+)
+def create_contract_change_request(
+    contract_id: int,
+    payload: ContractChangeRequestCreate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create a PENDING request and proposed DRAFT revision in one transaction."""
+    with CONTRACT_CHANGE_REQUEST_CREATION_LOCK:
+        try:
+            contract = crud.get_contract(db=db, contract_id=contract_id)
+            if contract is None:
+                raise HTTPException(status_code=404, detail="Contract not found")
+            _require_contract_access(contract, current_user)
+
+            base_revision = crud.get_latest_contract_revision(db=db, contract_id=contract_id)
+            if base_revision is None:
+                raise HTTPException(status_code=422, detail="Contract has no base revision")
+            if crud.get_pending_contract_change_request(db=db, contract_id=contract_id) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A pending change request already exists for this contract.",
+                )
+
+            term_changes = payload.model_dump(exclude_unset=True, exclude={"reason"})
+            change_request = crud.create_contract_change_request(
+                db=db,
+                contract=contract,
+                base_revision=base_revision,
+                requested_by_user_id=current_user.id,
+                reason=payload.reason,
+                term_changes=term_changes,
+            )
+            db.commit()
+            db.refresh(change_request)
+            return change_request
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A pending change request already exists for this contract.",
+            ) from exc
+
+
+@app.get(
+    "/contracts/{contract_id}/change-requests",
+    response_model=list[ContractChangeRequestSummaryResponse],
+    tags=["contract-change-requests"],
+)
+def read_contract_change_requests(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read Change Requests visible to a Contract participant or admin."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    return crud.get_contract_change_requests(db=db, contract_id=contract_id)
+
+
+@app.get(
+    "/contracts/{contract_id}/change-requests/{change_request_id}",
+    response_model=ContractChangeRequestDetailResponse,
+    tags=["contract-change-requests"],
+)
+def read_contract_change_request(
+    contract_id: int,
+    change_request_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read one Change Request with base/proposed revision comparison data."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    change_request = crud.get_contract_change_request(
+        db=db,
+        contract_id=contract_id,
+        change_request_id=change_request_id,
+    )
+    if change_request is None:
+        raise HTTPException(status_code=404, detail="Change request not found")
+    return change_request
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

@@ -4,7 +4,7 @@ from sqlalchemy import func, or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Contract, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -229,6 +229,106 @@ def create_contract_revision(db: Session, contract: Contract):
     db.add(revision)
     db.flush()
     return revision
+
+
+def get_latest_contract_revision(db: Session, contract_id: int):
+    """Return the latest immutable revision for one Contract."""
+    return (
+        db.query(ContractRevision)
+        .filter(ContractRevision.contract_id == contract_id)
+        .order_by(ContractRevision.revision_no.desc())
+        .first()
+    )
+
+
+def get_pending_contract_change_request(db: Session, contract_id: int):
+    """Return the single approval-pending request for a Contract, if present."""
+    return (
+        db.query(ContractChangeRequest)
+        .filter(
+            ContractChangeRequest.contract_id == contract_id,
+            ContractChangeRequest.status == "PENDING",
+        )
+        .first()
+    )
+
+
+def get_contract_change_requests(db: Session, contract_id: int):
+    """Return Change Requests newest first without mutating their revisions."""
+    return (
+        db.query(ContractChangeRequest)
+        .filter(ContractChangeRequest.contract_id == contract_id)
+        .order_by(ContractChangeRequest.id.desc())
+        .all()
+    )
+
+
+def get_contract_change_request(db: Session, contract_id: int, change_request_id: int):
+    """Return one Change Request scoped to its Contract."""
+    return (
+        db.query(ContractChangeRequest)
+        .filter(
+            ContractChangeRequest.contract_id == contract_id,
+            ContractChangeRequest.id == change_request_id,
+        )
+        .first()
+    )
+
+
+def create_contract_change_request(
+    db: Session,
+    contract: Contract,
+    base_revision: ContractRevision,
+    requested_by_user_id: int,
+    reason: str,
+    term_changes: dict,
+):
+    """Stage a proposed DRAFT revision and its PENDING request atomically."""
+    current_revision_no = (
+        db.query(func.max(ContractRevision.revision_no))
+        .filter(ContractRevision.contract_id == contract.id)
+        .scalar()
+    )
+    snapshot = {
+        "contract_no": base_revision.contract_no,
+        "trade_id": base_revision.trade_id,
+        "product_id": base_revision.product_id,
+        "buyer_id": base_revision.buyer_id,
+        "seller_id": base_revision.seller_id,
+        "quantity": base_revision.quantity,
+        "unit": base_revision.unit,
+        "price": base_revision.price,
+        "currency": base_revision.currency,
+        "total_value": base_revision.total_value,
+        "status": base_revision.status,
+        "brand": base_revision.brand,
+        "tolerance": base_revision.tolerance,
+        "quotation_period": base_revision.quotation_period,
+        "delivery_term": base_revision.delivery_term,
+        "delivery_location": base_revision.delivery_location,
+        "payment_term": base_revision.payment_term,
+        "partial_delivery": base_revision.partial_delivery,
+    }
+    snapshot.update(term_changes)
+    proposed_revision = ContractRevision(
+        contract_id=contract.id,
+        revision_no=(current_revision_no or 0) + 1,
+        revision_status="DRAFT",
+        **snapshot,
+    )
+    db.add(proposed_revision)
+    db.flush()
+    change_request = ContractChangeRequest(
+        contract_id=contract.id,
+        base_revision_id=base_revision.revision_id,
+        proposed_revision_id=proposed_revision.revision_id,
+        requested_by_user_id=requested_by_user_id,
+        reason=reason,
+        status="PENDING",
+    )
+    db.add(change_request)
+    db.flush()
+    return change_request
 
 
 def get_warehouse_inventory(db: Session, warehouse_id: int):

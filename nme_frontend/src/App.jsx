@@ -1012,6 +1012,12 @@ export default function App(){
   const [selectedRevisionDetail, setSelectedRevisionDetail] = useState(null)
   const [revisionDetailLoading, setRevisionDetailLoading] = useState(false)
   const [revisionDetailError, setRevisionDetailError] = useState(null)
+  const [contractChangeRequests, setContractChangeRequests] = useState([])
+  const [changeRequestsLoading, setChangeRequestsLoading] = useState(false)
+  const [changeRequestsError, setChangeRequestsError] = useState(null)
+  const [selectedChangeRequest, setSelectedChangeRequest] = useState(null)
+  const [changeRequestDetailLoading, setChangeRequestDetailLoading] = useState(false)
+  const [changeRequestDetailError, setChangeRequestDetailError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1723,6 +1729,10 @@ export default function App(){
     setContractRevisionsError(null)
     setSelectedRevisionDetail(null)
     setRevisionDetailError(null)
+    setContractChangeRequests([])
+    setChangeRequestsError(null)
+    setSelectedChangeRequest(null)
+    setChangeRequestDetailError(null)
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1761,6 +1771,16 @@ export default function App(){
       }
       const revisions = await revisionsRes.json()
       setContractRevisions(Array.isArray(revisions) ? revisions : [])
+
+      setChangeRequestsLoading(true)
+      const changeRequestsRes = await authFetch(API + `/contracts/${contract.id}/change-requests`)
+      if(!changeRequestsRes.ok){
+        const j = await changeRequestsRes.json().catch(()=>({detail: changeRequestsRes.statusText}))
+        setChangeRequestsError(j.detail || 'Change Request 이력을 불러오지 못했습니다.')
+        return
+      }
+      const changeRequests = await changeRequestsRes.json()
+      setContractChangeRequests(Array.isArray(changeRequests) ? changeRequests : [])
     }catch(err){
       console.error('trade detail error', err)
       if(tradeLoaded){
@@ -1772,6 +1792,7 @@ export default function App(){
       setTradeDetailLoading(false)
       setContractDetailLoading(false)
       setContractRevisionsLoading(false)
+      setChangeRequestsLoading(false)
     }
   }
 
@@ -1792,6 +1813,26 @@ export default function App(){
       setRevisionDetailError(err?.message || 'Revision 상세를 불러오지 못했습니다.')
     }finally{
       setRevisionDetailLoading(false)
+    }
+  }
+
+  async function loadContractChangeRequestDetail(contractId, changeRequestId){
+    setChangeRequestDetailLoading(true)
+    setChangeRequestDetailError(null)
+    setSelectedChangeRequest(null)
+    try{
+      const res = await authFetch(API + `/contracts/${contractId}/change-requests/${changeRequestId}`)
+      if(!res.ok){
+        const j = await res.json().catch(()=>({detail: res.statusText}))
+        setChangeRequestDetailError(j.detail || 'Change Request 상세를 불러오지 못했습니다.')
+        return
+      }
+      setSelectedChangeRequest(await res.json())
+    }catch(err){
+      console.error('contract change request detail error', err)
+      setChangeRequestDetailError(err?.message || 'Change Request 상세를 불러오지 못했습니다.')
+    }finally{
+      setChangeRequestDetailLoading(false)
     }
   }
 
@@ -2831,6 +2872,69 @@ export default function App(){
                                 </dl>
                               </div>
                             )}
+                            <div className="change-request-history">
+                              <h5>Change Requests</h5>
+                              {changeRequestsLoading && <div className="info">Loading change requests...</div>}
+                              {!changeRequestsLoading && changeRequestsError && <div className="error-msg">{changeRequestsError}</div>}
+                              {!changeRequestsLoading && !changeRequestsError && contractChangeRequests.length === 0 && (
+                                <div className="contract-empty">No change requests available</div>
+                              )}
+                              {!changeRequestsLoading && !changeRequestsError && contractChangeRequests.length > 0 && (
+                                <div className="trade-table-wrap">
+                                  <table className="trade-table change-request-table">
+                                    <thead><tr><th>Request ID</th><th>Status</th><th>Reason</th><th>Created At</th><th>Detail</th></tr></thead>
+                                    <tbody>
+                                      {contractChangeRequests.map(request => (
+                                        <tr key={request.change_request_id}>
+                                          <td>{request.change_request_id}</td>
+                                          <td>{request.status === 'PENDING' ? '승인 대기' : formatContractValue(request.status)}</td>
+                                          <td>{request.reason}</td>
+                                          <td>{formatDateTime(request.created_at)}</td>
+                                          <td><button className="secondary" onClick={()=> loadContractChangeRequestDetail(selectedContractDetail.id, request.change_request_id)}>보기</button></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {changeRequestDetailLoading && <div className="info">Loading change request detail...</div>}
+                              {!changeRequestDetailLoading && changeRequestDetailError && <div className="error-msg">{changeRequestDetailError}</div>}
+                              {!changeRequestDetailLoading && selectedChangeRequest && (
+                                <div className="revision-detail change-request-detail">
+                                  <h5>Change Request #{selectedChangeRequest.change_request_id} Detail</h5>
+                                  <dl className="contract-grid">
+                                    <div><dt>Status</dt><dd>{selectedChangeRequest.status === 'PENDING' ? '승인 대기' : formatContractValue(selectedChangeRequest.status)}</dd></div>
+                                    <div><dt>Requested By</dt><dd>{formatContractValue(selectedChangeRequest.requested_by)}</dd></div>
+                                    <div><dt>Base Revision</dt><dd>#{selectedChangeRequest.base_revision_no}</dd></div>
+                                    <div><dt>Proposed Revision</dt><dd>#{selectedChangeRequest.proposed_revision_no} ({selectedChangeRequest.proposed_revision_status})</dd></div>
+                                    <div><dt>Reason</dt><dd>{selectedChangeRequest.reason}</dd></div>
+                                    <div><dt>Created At</dt><dd>{formatDateTime(selectedChangeRequest.created_at)}</dd></div>
+                                  </dl>
+                                  <div className="trade-table-wrap">
+                                    <table className="trade-table terms-comparison">
+                                      <thead><tr><th>Term</th><th>Current</th><th>Proposed</th></tr></thead>
+                                      <tbody>
+                                        {[
+                                          ['Brand', 'brand'],
+                                          ['Tolerance', 'tolerance'],
+                                          ['Quotation Period', 'quotation_period'],
+                                          ['Delivery Term', 'delivery_term'],
+                                          ['Delivery Location', 'delivery_location'],
+                                          ['Payment Term', 'payment_term'],
+                                          ['Partial Delivery', 'partial_delivery'],
+                                        ].map(([label, key]) => (
+                                          <tr key={key}>
+                                            <th>{label}</th>
+                                            <td>{formatContractValue(selectedChangeRequest.base_revision[key])}</td>
+                                            <td>{formatContractValue(selectedChangeRequest.proposed_revision[key])}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </section>
                         </div>
                       )}

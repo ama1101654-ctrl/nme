@@ -8,7 +8,7 @@ from playwright.sync_api import expect
 
 from app.database import SessionLocal
 from app.main import create_access_token
-from app.models import Company, CompanyMember, Contract, ContractRevision, InvestorProfile, MemberProfile, Order, Trade, User
+from app.models import Company, CompanyMember, Contract, ContractChangeRequest, ContractRevision, InvestorProfile, MemberProfile, Order, Trade, User
 
 
 pytestmark = pytest.mark.browser
@@ -306,10 +306,10 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
         )
         db.add(contract)
         db.flush()
-        db.add(ContractRevision(
+        base_revision = ContractRevision(
             contract_id=contract.id,
             revision_no=1,
-            revision_status='DRAFT',
+            revision_status='ACTIVE',
             contract_no=contract.contract_no,
             trade_id=contract.trade_id,
             product_id=contract.product_id,
@@ -328,6 +328,41 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
             delivery_location=contract.delivery_location,
             payment_term=contract.payment_term,
             partial_delivery=contract.partial_delivery,
+        )
+        db.add(base_revision)
+        db.flush()
+        proposed_revision = ContractRevision(
+            contract_id=contract.id,
+            revision_no=2,
+            revision_status='DRAFT',
+            contract_no=contract.contract_no,
+            trade_id=contract.trade_id,
+            product_id=contract.product_id,
+            buyer_id=contract.buyer_id,
+            seller_id=contract.seller_id,
+            quantity=contract.quantity,
+            unit=contract.unit,
+            price=contract.price,
+            currency=contract.currency,
+            total_value=contract.total_value,
+            status=contract.status,
+            brand='PMB Premium',
+            tolerance=contract.tolerance,
+            quotation_period=contract.quotation_period,
+            delivery_term=contract.delivery_term,
+            delivery_location='Busan',
+            payment_term=contract.payment_term,
+            partial_delivery=contract.partial_delivery,
+        )
+        db.add(proposed_revision)
+        db.flush()
+        db.add(ContractChangeRequest(
+            contract_id=contract.id,
+            base_revision_id=base_revision.revision_id,
+            proposed_revision_id=proposed_revision.revision_id,
+            requested_by_user_id=seeded_ids['buyer_id'],
+            reason='Update brand and delivery location',
+            status='PENDING',
         ))
         missing_buy_order = Order(
             product_id=seeded_ids['product_id'],
@@ -382,12 +417,23 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(page.locator('.contract-detail')).to_contain_text('T/T Korean Dollar')
     expect(page.locator('.contract-grid > div', has_text='Tolerance').locator('dd')).to_have_text('-')
     expect(page.get_by_role('heading', name='Revision History')).to_be_visible()
+    expect(page.locator('.revision-table')).to_contain_text('ACTIVE')
     expect(page.locator('.revision-table')).to_contain_text('DRAFT')
-    page.locator('.revision-table').get_by_role('button', name='보기').click()
+    page.locator('.revision-table').get_by_role('button', name='보기').first.click()
     expect(page.get_by_role('heading', name='Revision #1 Detail')).to_be_visible()
     expect(page.locator('.revision-detail')).to_contain_text('PMB')
     expect(page.locator('.revision-detail')).to_contain_text('T/T Korean Dollar')
-    expect(page.get_by_role('button', name=re.compile('Edit|Delete|Approve|Reject|Apply Revision|Modify Terms'))).to_have_count(0)
+    expect(page.get_by_role('heading', name='Change Requests')).to_be_visible()
+    expect(page.locator('.change-request-table')).to_contain_text('승인 대기')
+    page.locator('.change-request-table').get_by_role('button', name='보기').click()
+    expect(page.get_by_role('heading', name='Change Request #1 Detail')).to_be_visible()
+    expect(page.locator('.terms-comparison')).to_contain_text('Current')
+    expect(page.locator('.terms-comparison')).to_contain_text('Proposed')
+    expect(page.locator('.terms-comparison')).to_contain_text('PMB Premium')
+    expect(page.locator('.terms-comparison')).to_contain_text('Incheon')
+    expect(page.locator('.terms-comparison')).to_contain_text('Busan')
+    expect(page.locator('.terms-comparison')).to_contain_text('T/T Korean Dollar')
+    expect(page.get_by_role('button', name=re.compile('Edit|Delete|Approve|Reject|Apply|Finalize|Activate|Cancel|Modify Terms'))).to_have_count(0)
 
 
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):
