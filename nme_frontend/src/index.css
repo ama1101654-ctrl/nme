@@ -148,6 +148,17 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 .history-detail h4{margin:0 0 8px}
 .detail-section{margin-top:12px;padding:10px;border:1px solid #dfeeff;border-radius:8px;background:#f8fbff}
 .detail-section h5{margin:0 0 8px;color:#0b3b66}
+.contract-detail{margin-top:16px;padding-top:16px;border-top:1px solid #cfe1f5}
+.contract-detail>h4{margin:0;color:#082240;font-size:18px}
+.contract-sections{margin-top:12px;display:grid;gap:16px}
+.contract-group{padding-top:12px;border-top:1px solid #dfe8f3}
+.contract-group:first-child{padding-top:0;border-top:0}
+.contract-group h5{font-size:14px}
+.contract-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;margin:0}
+.contract-grid>div{min-width:0}
+.contract-grid dt{font-size:12px;color:#45648a}
+.contract-grid dd{margin:3px 0 0;font-weight:700;color:#082240;overflow-wrap:anywhere}
+.contract-empty{margin-top:10px;padding:12px;background:#fff;border-left:3px solid #8fb8ff;color:#45648a}
 .todo-box{background:#eaf2ff;border-color:#cfe1ff}
 .todo-box.tone-required{background:#e7f2ff;border-color:#9fc3ff}
 .todo-box.tone-waiting{background:#eef4ff;border-color:#d3e2ff}
@@ -168,7 +179,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 @media(max-width:1000px){.dashboard-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:800px){.history-search{min-width:100%}}
 @media(max-width:800px){.history-grid{grid-template-columns:1fr}}
+@media(max-width:800px){.contract-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.dashboard-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.contract-grid{grid-template-columns:1fr}}
 @media(max-width:600px){.action-required-panel{padding:10px}}
 @media(max-width:700px){.header-actions{width:100%;justify-content:space-between;flex-wrap:wrap}}
 

@@ -562,6 +562,11 @@ function formatDateTime(v){
   return d.toLocaleString('ko-KR')
 }
 
+function formatContractValue(value){
+  if(value == null || String(value).trim() === '') return '-'
+  return String(value)
+}
+
 function hasOrderStatusAtLeast(status, target){
   const order = ['PENDING', 'ACCEPTED', 'PAID', 'SHIPPED', 'COMPLETED']
   const currentIndex = order.indexOf(status)
@@ -997,6 +1002,10 @@ export default function App(){
   const [selectedTradeDetail, setSelectedTradeDetail] = useState(null)
   const [tradeDetailLoading, setTradeDetailLoading] = useState(false)
   const [tradeDetailError, setTradeDetailError] = useState(null)
+  const [selectedContractDetail, setSelectedContractDetail] = useState(null)
+  const [contractDetailLoading, setContractDetailLoading] = useState(false)
+  const [contractDetailError, setContractDetailError] = useState(null)
+  const [contractNotFound, setContractNotFound] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1696,9 +1705,14 @@ export default function App(){
   }
 
   async function loadTradeDetail(tradeId){
+    let tradeLoaded = false
     setTradeDetailLoading(true)
     setTradeDetailError(null)
     setSelectedTradeDetail(null)
+    setContractDetailLoading(false)
+    setContractDetailError(null)
+    setContractNotFound(false)
+    setSelectedContractDetail(null)
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1707,11 +1721,35 @@ export default function App(){
         return
       }
       setSelectedTradeDetail(await res.json())
+      tradeLoaded = true
+
+      if(!readAuthTokenFromStorage()){
+        setContractDetailError('계약 상세를 보려면 로그인이 필요합니다.')
+        return
+      }
+
+      setContractDetailLoading(true)
+      const contractRes = await authFetch(API + `/trades/${tradeId}/contract`)
+      if(contractRes.status === 404){
+        setContractNotFound(true)
+        return
+      }
+      if(!contractRes.ok){
+        const j = await contractRes.json().catch(()=>({detail: contractRes.statusText}))
+        setContractDetailError(j.detail || '계약 상세를 불러오지 못했습니다.')
+        return
+      }
+      setSelectedContractDetail(await contractRes.json())
     }catch(err){
       console.error('trade detail error', err)
-      setTradeDetailError('서버와 통신할 수 없습니다.')
+      if(tradeLoaded){
+        setContractDetailError(err?.message || '계약 상세를 불러오지 못했습니다.')
+      }else{
+        setTradeDetailError(err?.message || '서버와 통신할 수 없습니다.')
+      }
     }finally{
       setTradeDetailLoading(false)
+      setContractDetailLoading(false)
     }
   }
 
@@ -2653,6 +2691,53 @@ export default function App(){
                     <div>수량: <strong>{formatTradeQuantity(selectedTradeDetail.quantity)}</strong></div>
                     <div>구분: <strong>{formatTradeSide(selectedTradeDetail.side)}</strong></div>
                     <div>체결시간: <strong>{formatDateTime(selectedTradeDetail.time)}</strong></div>
+
+                    <section className="contract-detail" aria-labelledby="contract-detail-title">
+                      <h4 id="contract-detail-title">Contract Detail</h4>
+                      {contractDetailLoading && <div className="info">계약 상세를 불러오는 중...</div>}
+                      {!contractDetailLoading && contractNotFound && <div className="contract-empty">No contract available</div>}
+                      {!contractDetailLoading && contractDetailError && <div className="error-msg">{contractDetailError}</div>}
+                      {!contractDetailLoading && selectedContractDetail && (
+                        <div className="contract-sections">
+                          <section className="contract-group">
+                            <h5>Contract Basic Information</h5>
+                            <dl className="contract-grid">
+                              <div><dt>Contract No</dt><dd>{formatContractValue(selectedContractDetail.contract_no)}</dd></div>
+                              <div><dt>Contract ID</dt><dd>{formatContractValue(selectedContractDetail.id)}</dd></div>
+                              <div><dt>Trade ID</dt><dd>{formatContractValue(selectedContractDetail.trade_id)}</dd></div>
+                              <div><dt>Product ID</dt><dd>{formatContractValue(selectedContractDetail.product_id)}</dd></div>
+                              <div><dt>Status</dt><dd>{formatContractValue(selectedContractDetail.status)}</dd></div>
+                              <div><dt>Created At</dt><dd>{formatDateTime(selectedContractDetail.created_at)}</dd></div>
+                              <div><dt>Updated At</dt><dd>{formatDateTime(selectedContractDetail.updated_at)}</dd></div>
+                            </dl>
+                          </section>
+                          <section className="contract-group">
+                            <h5>Trade Information</h5>
+                            <dl className="contract-grid">
+                              <div><dt>Quantity</dt><dd>{formatContractValue(selectedContractDetail.quantity)}</dd></div>
+                              <div><dt>Unit</dt><dd>{formatContractValue(selectedContractDetail.unit)}</dd></div>
+                              <div><dt>Price</dt><dd>{selectedContractDetail.price == null ? '-' : formatPrice(selectedContractDetail.price)}</dd></div>
+                              <div><dt>Currency</dt><dd>{formatContractValue(selectedContractDetail.currency)}</dd></div>
+                              <div><dt>Total Value</dt><dd>{selectedContractDetail.total_value == null ? '-' : formatPrice(selectedContractDetail.total_value)}</dd></div>
+                              <div><dt>Buyer ID</dt><dd>{formatContractValue(selectedContractDetail.buyer_id)}</dd></div>
+                              <div><dt>Seller ID</dt><dd>{formatContractValue(selectedContractDetail.seller_id)}</dd></div>
+                            </dl>
+                          </section>
+                          <section className="contract-group">
+                            <h5>Contract Terms</h5>
+                            <dl className="contract-grid">
+                              <div><dt>Brand</dt><dd>{formatContractValue(selectedContractDetail.brand)}</dd></div>
+                              <div><dt>Tolerance</dt><dd>{formatContractValue(selectedContractDetail.tolerance)}</dd></div>
+                              <div><dt>Quotation Period</dt><dd>{formatContractValue(selectedContractDetail.quotation_period)}</dd></div>
+                              <div><dt>Delivery Term</dt><dd>{formatContractValue(selectedContractDetail.delivery_term)}</dd></div>
+                              <div><dt>Delivery Location</dt><dd>{formatContractValue(selectedContractDetail.delivery_location)}</dd></div>
+                              <div><dt>Payment Term</dt><dd>{formatContractValue(selectedContractDetail.payment_term)}</dd></div>
+                              <div><dt>Partial Delivery</dt><dd>{formatContractValue(selectedContractDetail.partial_delivery)}</dd></div>
+                            </dl>
+                          </section>
+                        </div>
+                      )}
+                    </section>
                   </div>
                 )}
               </div>

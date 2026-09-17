@@ -7,7 +7,8 @@ import pytest
 from playwright.sync_api import expect
 
 from app.database import SessionLocal
-from app.models import Company, CompanyMember, InvestorProfile, MemberProfile, User
+from app.main import create_access_token
+from app.models import Company, CompanyMember, Contract, InvestorProfile, MemberProfile, Order, Trade, User
 
 
 pytestmark = pytest.mark.browser
@@ -83,6 +84,19 @@ def login_user(page, frontend_url, backend_url, email, password='secret'):
     assert user_info['status'] == 200
 
     return auth_me['data']
+
+
+def open_authenticated_session(page, frontend_url, user_id):
+    page.goto(frontend_url, wait_until='domcontentloaded')
+    page.evaluate(
+        '''({ token, userId }) => {
+            window.sessionStorage.setItem('nme_auth_token', token);
+            window.sessionStorage.setItem('nme_auth_user_id', String(userId));
+        }''',
+        {'token': create_access_token(user_id), 'userId': user_id},
+    )
+    page.reload(wait_until='domcontentloaded')
+    expect(page.get_by_role('heading', name='NME Live Market')).to_be_visible()
 
 
 def accept_dialogs(page):
@@ -237,6 +251,113 @@ def test_browser_password_security_login_and_logout(page, browser_frontend_url, 
     page.get_by_role('button', name='로그아웃').click()
     expect(page.get_by_role('heading', name='Non-ferrous Metals Exchange')).to_be_visible()
     assert api_fetch(page, browser_backend_url, '/members/me')['status'] == 401
+
+
+def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, browser_backend_url, seeded_ids):
+    with SessionLocal() as db:
+        buy_order = Order(
+            product_id=seeded_ids['product_id'],
+            buyer_id=seeded_ids['buyer_id'],
+            quantity=10,
+            remaining_quantity=0,
+            price=2400,
+            side='buy',
+            status='FILLED',
+        )
+        sell_order = Order(
+            product_id=seeded_ids['product_id'],
+            seller_id=seeded_ids['seller_id'],
+            quantity=10,
+            remaining_quantity=0,
+            price=2400,
+            side='sell',
+            status='FILLED',
+        )
+        db.add_all([buy_order, sell_order])
+        db.flush()
+        trade = Trade(
+            product_id=seeded_ids['product_id'],
+            buy_order_id=buy_order.id,
+            sell_order_id=sell_order.id,
+            quantity=10,
+            price=2400,
+        )
+        db.add(trade)
+        db.flush()
+        contract = Contract(
+            contract_no=f'NME-CT-2026-{trade.id:010d}',
+            trade_id=trade.id,
+            product_id=seeded_ids['product_id'],
+            buyer_id=seeded_ids['buyer_id'],
+            seller_id=seeded_ids['seller_id'],
+            quantity=10,
+            unit='TON',
+            price=2400,
+            currency='KRW',
+            total_value=24000,
+            status='DRAFT',
+            brand='PMB',
+            tolerance=None,
+            quotation_period='Unknown On Day',
+            delivery_term='CIF',
+            delivery_location='Incheon',
+            payment_term='T/T Korean Dollar',
+            partial_delivery='YES',
+        )
+        db.add(contract)
+        missing_buy_order = Order(
+            product_id=seeded_ids['product_id'],
+            buyer_id=seeded_ids['buyer_id'],
+            quantity=5,
+            remaining_quantity=0,
+            price=2300,
+            side='buy',
+            status='FILLED',
+        )
+        missing_sell_order = Order(
+            product_id=seeded_ids['product_id'],
+            seller_id=seeded_ids['seller_id'],
+            quantity=5,
+            remaining_quantity=0,
+            price=2300,
+            side='sell',
+            status='FILLED',
+        )
+        db.add_all([missing_buy_order, missing_sell_order])
+        db.flush()
+        missing_contract_trade = Trade(
+            product_id=seeded_ids['product_id'],
+            buy_order_id=missing_buy_order.id,
+            sell_order_id=missing_sell_order.id,
+            quantity=5,
+            price=2300,
+        )
+        db.add(missing_contract_trade)
+        db.commit()
+        trade_id = trade.id
+        missing_contract_trade_id = missing_contract_trade.id
+        contract_no = contract.contract_no
+
+    open_authenticated_session(page, browser_frontend_url, seeded_ids['buyer_id'])
+    page.get_by_role('button', name='거래 이력').click()
+    page.get_by_role('button', name='보기').first.click()
+
+    expect(page.get_by_role('heading', name=f'Trade #{missing_contract_trade_id} 상세')).to_be_visible()
+    expect(page.get_by_text('No contract available')).to_be_visible()
+    expect(page.locator('.contract-detail .error-msg')).to_have_count(0)
+
+    page.get_by_role('button', name='보기').nth(1).click()
+    expect(page.get_by_role('heading', name=f'Trade #{trade_id} 상세')).to_be_visible()
+    expect(page.get_by_role('heading', name='Contract Detail')).to_be_visible()
+    expect(page.get_by_role('heading', name='Contract Basic Information')).to_be_visible()
+    expect(page.get_by_role('heading', name='Trade Information')).to_be_visible()
+    expect(page.get_by_role('heading', name='Contract Terms')).to_be_visible()
+    expect(page.locator('.contract-detail')).to_contain_text(contract_no)
+    expect(page.locator('.contract-detail')).to_contain_text('PMB')
+    expect(page.locator('.contract-detail')).to_contain_text('Unknown On Day')
+    expect(page.locator('.contract-detail')).to_contain_text('T/T Korean Dollar')
+    expect(page.locator('.contract-grid > div', has_text='Tolerance').locator('dd')).to_have_text('-')
+    expect(page.locator('.contract-detail button')).to_have_count(0)
 
 
 def test_browser_trade_lifecycle(browser, browser_frontend_url, browser_backend_url, seeded_ids, tmp_path):
