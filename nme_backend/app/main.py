@@ -46,6 +46,7 @@ from .schemas import (
     ContractChangeRequestDetailResponse,
     ContractChangeRequestReject,
     ContractChangeRequestSummaryResponse,
+    ContractExecutionResponse,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
@@ -272,6 +273,7 @@ CONTRACT_CREATION_LOCK = Lock()
 CONTRACT_REVISION_CREATION_LOCK = Lock()
 CONTRACT_CHANGE_REQUEST_CREATION_LOCK = Lock()
 CONTRACT_CHANGE_REQUEST_DECISION_LOCK = Lock()
+CONTRACT_EXECUTION_CREATION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -1969,6 +1971,74 @@ def reject_contract_change_request(
         except Exception:
             db.rollback()
             raise
+
+
+@app.post(
+    "/contracts/{contract_id}/execution",
+    response_model=ContractExecutionResponse,
+    tags=["contract-executions"],
+)
+def create_contract_execution(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Create one READY execution fixed to the current eligible ACTIVE Revision."""
+    with CONTRACT_EXECUTION_CREATION_LOCK:
+        try:
+            contract = crud.get_contract(db=db, contract_id=contract_id)
+            if contract is None:
+                raise HTTPException(status_code=404, detail="Contract not found")
+            _contract_approver_side(contract, current_user)
+            if crud.get_contract_execution(db=db, contract_id=contract_id) is not None:
+                raise HTTPException(status_code=409, detail="Contract execution already exists")
+            active_revision = crud.get_active_contract_revision(db=db, contract_id=contract_id)
+            if active_revision is None:
+                raise HTTPException(status_code=422, detail="Contract has no ACTIVE revision")
+            if not crud.active_revision_is_execution_eligible(
+                db=db,
+                contract_id=contract_id,
+                revision_id=active_revision.revision_id,
+            ):
+                raise HTTPException(status_code=409, detail="ACTIVE revision approval is incomplete")
+            execution = crud.create_contract_execution(
+                db=db,
+                contract_id=contract_id,
+                contract_revision_id=active_revision.revision_id,
+            )
+            db.commit()
+            db.refresh(execution)
+            return execution
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Contract execution already exists") from exc
+        except Exception:
+            db.rollback()
+            raise
+
+
+@app.get(
+    "/contracts/{contract_id}/execution",
+    response_model=ContractExecutionResponse,
+    tags=["contract-executions"],
+)
+def read_contract_execution(
+    contract_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    """Read the immutable execution Revision reference for an accessible Contract."""
+    contract = crud.get_contract(db=db, contract_id=contract_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    _require_contract_access(contract, current_user)
+    execution = crud.get_contract_execution(db=db, contract_id=contract_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Contract execution not found")
+    return execution
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

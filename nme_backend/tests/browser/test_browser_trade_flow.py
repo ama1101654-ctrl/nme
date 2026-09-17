@@ -445,6 +445,9 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(page.locator('.change-request-detail')).to_contain_text('APPROVED')
     expect(page.locator('.change-request-detail')).to_contain_text('Seller Approval')
     expect(page.get_by_role('button', name='Buyer 승인')).to_have_count(0)
+    expect(page.get_by_role('heading', name='Contract Execution')).to_be_visible()
+    expect(page.get_by_text('Execution: Not Created')).to_be_visible()
+    expect(page.get_by_role('button', name='Create Execution')).to_have_count(0)
 
     seller_page = page.context.new_page()
     open_authenticated_session(seller_page, browser_frontend_url, seeded_ids['seller_id'])
@@ -459,6 +462,12 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(revision_rows.nth(0)).to_contain_text('SUPERSEDED')
     expect(revision_rows.nth(1)).to_contain_text('ACTIVE')
     expect(seller_page.get_by_role('button', name=re.compile('Buyer 승인|Seller 승인|Reject'))).to_have_count(0)
+    seller_page.get_by_role('button', name='Create Execution').click()
+    execution_detail = seller_page.locator('.execution-detail')
+    expect(execution_detail).to_contain_text('READY')
+    expect(execution_detail).to_contain_text('Execution Revision#2')
+    expect(execution_detail).to_contain_text(contract_no)
+    expect(seller_page.get_by_role('button', name='Create Execution')).to_have_count(0)
     seller_page.close()
 
 

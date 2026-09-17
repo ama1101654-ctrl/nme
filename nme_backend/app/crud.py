@@ -4,7 +4,7 @@ from sqlalchemy import func, or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractExecution, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -399,6 +399,54 @@ def stage_contract_change_request_rejection(
     change_request.status = "REJECTED"
     db.flush()
     return change_request
+
+
+def get_contract_execution(db: Session, contract_id: int):
+    """Return the single execution fixed to one Contract Revision, if present."""
+    return (
+        db.query(ContractExecution)
+        .filter(ContractExecution.contract_id == contract_id)
+        .first()
+    )
+
+
+def get_active_contract_revision(db: Session, contract_id: int):
+    """Return the Contract's sole ACTIVE Revision."""
+    return (
+        db.query(ContractRevision)
+        .filter(
+            ContractRevision.contract_id == contract_id,
+            ContractRevision.revision_status == "ACTIVE",
+        )
+        .first()
+    )
+
+
+def active_revision_is_execution_eligible(db: Session, contract_id: int, revision_id: int):
+    """Allow an initial ACTIVE Revision or an approved proposal Revision."""
+    change_requests = (
+        db.query(ContractChangeRequest)
+        .filter(ContractChangeRequest.contract_id == contract_id)
+        .all()
+    )
+    if not change_requests:
+        return True
+    return any(
+        request.proposed_revision_id == revision_id and request.status == "APPROVED"
+        for request in change_requests
+    )
+
+
+def create_contract_execution(db: Session, contract_id: int, contract_revision_id: int):
+    """Stage a READY execution without mutating its Contract or Revision."""
+    execution = ContractExecution(
+        contract_id=contract_id,
+        contract_revision_id=contract_revision_id,
+        status="READY",
+    )
+    db.add(execution)
+    db.flush()
+    return execution
 
 
 def get_warehouse_inventory(db: Session, warehouse_id: int):

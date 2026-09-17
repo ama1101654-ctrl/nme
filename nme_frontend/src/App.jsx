@@ -1022,6 +1022,9 @@ export default function App(){
   const [changeRequestActionError, setChangeRequestActionError] = useState(null)
   const [showRejectForm, setShowRejectForm] = useState(false)
   const [rejectionReason, setRejectionReason] = useState('')
+  const [contractExecution, setContractExecution] = useState(null)
+  const [contractExecutionLoading, setContractExecutionLoading] = useState(false)
+  const [contractExecutionError, setContractExecutionError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1076,6 +1079,19 @@ export default function App(){
       : null
   const canDecideChangeRequest = Boolean(
     selectedChangeRequest?.status === 'PENDING' && contractApprovalSide && !currentSideApproval
+  )
+  const activeContractRevision = contractRevisions.find(revision => revision.revision_status === 'ACTIVE')
+  const executionRevisionEligible = Boolean(
+    activeContractRevision && (
+      contractChangeRequests.length === 0
+      || contractChangeRequests.some(request => (
+        request.status === 'APPROVED'
+        && request.proposed_revision_id === activeContractRevision.revision_id
+      ))
+    )
+  )
+  const canCreateContractExecution = Boolean(
+    contractApprovalSide && executionRevisionEligible && !contractExecution
   )
   const actionCenterTitle = isSeller ? '판매자가 해야 할 일' : isBuyerRole(activeUser.role) ? '내가 해야 할 일' : '사용자 액션 센터'
   const actionCenterDesc = isSeller ? '지금 판매자가 확인해야 하는 거래' : isBuyerRole(activeUser.role) ? '지금 처리해야 하는 거래' : '현재 사용자 기준으로 확인이 필요한 거래'
@@ -1753,6 +1769,8 @@ export default function App(){
     setChangeRequestActionError(null)
     setShowRejectForm(false)
     setRejectionReason('')
+    setContractExecution(null)
+    setContractExecutionError(null)
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1801,6 +1819,15 @@ export default function App(){
       }
       const changeRequests = await changeRequestsRes.json()
       setContractChangeRequests(Array.isArray(changeRequests) ? changeRequests : [])
+
+      setContractExecutionLoading(true)
+      const executionRes = await authFetch(API + `/contracts/${contract.id}/execution`)
+      if(executionRes.status !== 404 && !executionRes.ok){
+        const j = await executionRes.json().catch(()=>({detail: executionRes.statusText}))
+        setContractExecutionError(j.detail || 'Contract Execution을 불러오지 못했습니다.')
+        return
+      }
+      setContractExecution(executionRes.status === 404 ? null : await executionRes.json())
     }catch(err){
       console.error('trade detail error', err)
       if(tradeLoaded){
@@ -1813,6 +1840,7 @@ export default function App(){
       setContractDetailLoading(false)
       setContractRevisionsLoading(false)
       setChangeRequestsLoading(false)
+      setContractExecutionLoading(false)
     }
   }
 
@@ -1903,6 +1931,24 @@ export default function App(){
       setChangeRequestActionError(err?.message || 'Change Request 처리에 실패했습니다.')
     }finally{
       setChangeRequestActionLoading(false)
+    }
+  }
+
+  async function createContractExecution(){
+    if(!selectedContractDetail || contractExecutionLoading) return
+    setContractExecutionLoading(true)
+    setContractExecutionError(null)
+    try{
+      const res = await authFetch(API + `/contracts/${selectedContractDetail.id}/execution`, {method:'POST'})
+      if(!res.ok){
+        const payload = await res.json().catch(()=>({detail:res.statusText}))
+        throw new Error(payload.detail || 'Contract Execution 생성에 실패했습니다.')
+      }
+      setContractExecution(await res.json())
+    }catch(err){
+      setContractExecutionError(err?.message || 'Contract Execution 생성에 실패했습니다.')
+    }finally{
+      setContractExecutionLoading(false)
     }
   }
 
@@ -3034,6 +3080,33 @@ export default function App(){
                                 </div>
                               )}
                             </div>
+                          </section>
+                          <section className="contract-group contract-execution">
+                            <h5>Contract Execution</h5>
+                            {contractExecutionLoading && <div className="info">Loading contract execution...</div>}
+                            {!contractExecutionLoading && contractExecutionError && <div className="error-msg">{contractExecutionError}</div>}
+                            {!contractExecutionLoading && !contractExecution && (
+                              <div className="execution-empty">
+                                <span>Execution: Not Created</span>
+                                {canCreateContractExecution && <button onClick={createContractExecution}>Create Execution</button>}
+                              </div>
+                            )}
+                            {!contractExecutionLoading && contractExecution && (
+                              <dl className="contract-grid execution-detail">
+                                <div><dt>Status</dt><dd>{contractExecution.status}</dd></div>
+                                <div><dt>Execution ID</dt><dd>{contractExecution.execution_id}</dd></div>
+                                <div><dt>Execution Revision</dt><dd>#{contractExecution.revision_no}</dd></div>
+                                <div><dt>Contract No</dt><dd>{contractExecution.contract_revision.contract_no}</dd></div>
+                                <div><dt>Trade ID</dt><dd>{contractExecution.contract_revision.trade_id}</dd></div>
+                                <div><dt>Product ID</dt><dd>{contractExecution.contract_revision.product_id}</dd></div>
+                                <div><dt>Buyer ID</dt><dd>{contractExecution.contract_revision.buyer_id}</dd></div>
+                                <div><dt>Seller ID</dt><dd>{contractExecution.contract_revision.seller_id}</dd></div>
+                                <div><dt>Quantity</dt><dd>{contractExecution.contract_revision.quantity} {contractExecution.contract_revision.unit}</dd></div>
+                                <div><dt>Price</dt><dd>{formatPrice(contractExecution.contract_revision.price)}</dd></div>
+                                <div><dt>Total Value</dt><dd>{formatPrice(contractExecution.contract_revision.total_value)} {contractExecution.contract_revision.currency}</dd></div>
+                                <div><dt>Created At</dt><dd>{formatDateTime(contractExecution.created_at)}</dd></div>
+                              </dl>
+                            )}
                           </section>
                         </div>
                       )}

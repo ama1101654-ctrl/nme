@@ -472,6 +472,19 @@ class ContractChangeRequestDetailResponse(ContractChangeRequestSummaryResponse):
     proposed_revision: ContractRevisionResponse
 
 
+class ContractExecutionResponse(BaseModel):
+    execution_id: int = Field(validation_alias="id")
+    contract_id: int
+    contract_revision_id: int
+    revision_no: int
+    status: Literal["READY"]
+    created_at: datetime
+    updated_at: datetime
+    contract_revision: ContractRevisionResponse
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TradeResponse(BaseModel):
     trade_id: int
     product_id: int

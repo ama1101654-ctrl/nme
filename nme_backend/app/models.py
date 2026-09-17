@@ -406,6 +406,7 @@ class Contract(Base):
     seller = relationship("User", foreign_keys=[seller_id])
     revisions = relationship("ContractRevision", back_populates="contract", order_by="ContractRevision.revision_no")
     change_requests = relationship("ContractChangeRequest", back_populates="contract", order_by="ContractChangeRequest.id")
+    execution = relationship("ContractExecution", back_populates="contract", uselist=False)
 
 
 class ContractRevision(Base):
@@ -580,6 +581,30 @@ class ContractChangeRequestApproval(Base):
 
     change_request = relationship("ContractChangeRequest", back_populates="approvals")
     approver_user = relationship("User", foreign_keys=[approver_user_id])
+
+
+class ContractExecution(Base):
+    """Immutable reference to the ACTIVE Revision selected for contract execution."""
+
+    __tablename__ = "contract_executions"
+    __table_args__ = (
+        UniqueConstraint("contract_id", name="uq_contract_executions_contract_id"),
+        CheckConstraint("status = 'READY'", name="ck_contract_executions_status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False, index=True)
+    contract_revision_id = Column(Integer, ForeignKey("contract_revisions.revision_id"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="READY")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    contract = relationship("Contract", back_populates="execution")
+    contract_revision = relationship("ContractRevision")
+
+    @property
+    def revision_no(self):
+        return self.contract_revision.revision_no
 
 
 class Deal(Base):
