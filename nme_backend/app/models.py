@@ -601,10 +601,58 @@ class ContractExecution(Base):
 
     contract = relationship("Contract", back_populates="execution")
     contract_revision = relationship("ContractRevision")
+    milestones = relationship(
+        "ExecutionMilestone",
+        back_populates="execution",
+        order_by="ExecutionMilestone.id",
+    )
 
     @property
     def revision_no(self):
         return self.contract_revision.revision_no
+
+
+class ExecutionMilestone(Base):
+    """Recorded readiness state for one step of a Contract Execution."""
+
+    __tablename__ = "execution_milestones"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_id",
+            "milestone_code",
+            name="uq_execution_milestones_execution_code",
+        ),
+        CheckConstraint(
+            "milestone_code IN ('CONTRACT_READY', 'PAYMENT_READY', "
+            "'WAREHOUSE_READY', 'DELIVERY_READY', 'DELIVERY_COMPLETED', "
+            "'SETTLEMENT_READY', 'COMPLETED')",
+            name="ck_execution_milestones_code",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'READY', 'COMPLETED')",
+            name="ck_execution_milestones_status",
+        ),
+        CheckConstraint(
+            "note IS NULL OR (TRIM(note) <> '' AND LENGTH(note) <= 500)",
+            name="ck_execution_milestones_note",
+        ),
+        CheckConstraint(
+            "(status = 'COMPLETED' AND completed_at IS NOT NULL) OR "
+            "(status IN ('PENDING', 'READY') AND completed_at IS NULL)",
+            name="ck_execution_milestones_completed_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    execution_id = Column(Integer, ForeignKey("contract_executions.id"), nullable=False, index=True)
+    milestone_code = Column(String(30), nullable=False)
+    status = Column(String(20), nullable=False, default="PENDING")
+    note = Column(String(500), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    execution = relationship("ContractExecution", back_populates="milestones")
 
 
 class Deal(Base):

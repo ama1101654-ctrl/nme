@@ -47,6 +47,9 @@ from .schemas import (
     ContractChangeRequestReject,
     ContractChangeRequestSummaryResponse,
     ContractExecutionResponse,
+    ExecutionMilestoneCreate,
+    ExecutionMilestoneResponse,
+    ExecutionMilestoneUpdate,
     MarketSummaryResponse,
     MetalGradeMasterResponse,
     MetalMasterResponse,
@@ -274,6 +277,7 @@ CONTRACT_REVISION_CREATION_LOCK = Lock()
 CONTRACT_CHANGE_REQUEST_CREATION_LOCK = Lock()
 CONTRACT_CHANGE_REQUEST_DECISION_LOCK = Lock()
 CONTRACT_EXECUTION_CREATION_LOCK = Lock()
+EXECUTION_MILESTONE_MUTATION_LOCK = Lock()
 
 
 def _order_status_from_remaining(order: Order) -> str:
@@ -2039,6 +2043,130 @@ def read_contract_execution(
     if execution is None:
         raise HTTPException(status_code=404, detail="Contract execution not found")
     return execution
+
+
+def _require_execution_access(db: Session, execution_id: int, current_user: User, mutation=False):
+    execution = crud.get_execution(db=db, execution_id=execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Contract execution not found")
+    if mutation:
+        _contract_approver_side(execution.contract, current_user)
+    else:
+        _require_contract_access(execution.contract, current_user)
+    return execution
+
+
+@app.get(
+    "/executions/{execution_id}/milestones",
+    response_model=list[ExecutionMilestoneResponse],
+    tags=["execution-milestones"],
+)
+def read_execution_milestones(
+    execution_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    _require_execution_access(db, execution_id, current_user)
+    return crud.get_execution_milestones(db=db, execution_id=execution_id)
+
+
+@app.get(
+    "/executions/{execution_id}/milestones/{milestone_id}",
+    response_model=ExecutionMilestoneResponse,
+    tags=["execution-milestones"],
+)
+def read_execution_milestone(
+    execution_id: int,
+    milestone_id: int,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    _require_execution_access(db, execution_id, current_user)
+    milestone = crud.get_execution_milestone(db, execution_id, milestone_id)
+    if milestone is None:
+        raise HTTPException(status_code=404, detail="Execution milestone not found")
+    return milestone
+
+
+@app.post(
+    "/executions/{execution_id}/milestones",
+    response_model=list[ExecutionMilestoneResponse] | ExecutionMilestoneResponse,
+    tags=["execution-milestones"],
+)
+def create_execution_milestones(
+    execution_id: int,
+    payload: ExecutionMilestoneCreate | None = None,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    with EXECUTION_MILESTONE_MUTATION_LOCK:
+        try:
+            _require_execution_access(db, execution_id, current_user, mutation=True)
+            if payload is None and crud.get_execution_milestones(db, execution_id):
+                raise HTTPException(status_code=409, detail="Execution milestones already exist")
+            result = (
+                crud.create_default_execution_milestones(db, execution_id)
+                if payload is None
+                else crud.create_execution_milestone(
+                    db,
+                    execution_id,
+                    payload.milestone_code,
+                    payload.status,
+                    payload.note,
+                )
+            )
+            db.commit()
+            if isinstance(result, list):
+                for milestone in result:
+                    db.refresh(milestone)
+            else:
+                db.refresh(result)
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Execution milestones already exist") from exc
+        except Exception:
+            db.rollback()
+            raise
+
+
+@app.patch(
+    "/executions/{execution_id}/milestones/{milestone_id}",
+    response_model=ExecutionMilestoneResponse,
+    tags=["execution-milestones"],
+)
+def update_execution_milestone(
+    execution_id: int,
+    milestone_id: int,
+    payload: ExecutionMilestoneUpdate,
+    current_user: User = Depends(get_current_auth_user),
+    db: Session = Depends(get_db),
+):
+    with EXECUTION_MILESTONE_MUTATION_LOCK:
+        try:
+            _require_execution_access(db, execution_id, current_user, mutation=True)
+            milestone = crud.get_execution_milestone(db, execution_id, milestone_id)
+            if milestone is None:
+                raise HTTPException(status_code=404, detail="Execution milestone not found")
+            result = crud.update_execution_milestone(db, milestone, payload.status, payload.note)
+            db.commit()
+            db.refresh(result)
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Invalid milestone state") from exc
+        except Exception:
+            db.rollback()
+            raise
 
 
 @app.get("/products/{product_id}/market-summary", response_model=MarketSummaryResponse, tags=["products"])

@@ -1025,6 +1025,9 @@ export default function App(){
   const [contractExecution, setContractExecution] = useState(null)
   const [contractExecutionLoading, setContractExecutionLoading] = useState(false)
   const [contractExecutionError, setContractExecutionError] = useState(null)
+  const [executionMilestones, setExecutionMilestones] = useState([])
+  const [executionMilestonesLoading, setExecutionMilestonesLoading] = useState(false)
+  const [executionMilestonesError, setExecutionMilestonesError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyLoaded, setHistoryLoaded] = useState(false)
@@ -1771,6 +1774,8 @@ export default function App(){
     setRejectionReason('')
     setContractExecution(null)
     setContractExecutionError(null)
+    setExecutionMilestones([])
+    setExecutionMilestonesError(null)
     try{
       const res = await fetch(API + `/trades/${tradeId}`)
       if(!res.ok){
@@ -1827,7 +1832,19 @@ export default function App(){
         setContractExecutionError(j.detail || 'Contract Execution을 불러오지 못했습니다.')
         return
       }
-      setContractExecution(executionRes.status === 404 ? null : await executionRes.json())
+      const execution = executionRes.status === 404 ? null : await executionRes.json()
+      setContractExecution(execution)
+      if(execution){
+        setExecutionMilestonesLoading(true)
+        const milestonesRes = await authFetch(API + `/executions/${execution.execution_id}/milestones`)
+        if(!milestonesRes.ok){
+          const j = await milestonesRes.json().catch(()=>({detail:milestonesRes.statusText}))
+          setExecutionMilestonesError(j.detail || 'Execution Milestones를 불러오지 못했습니다.')
+          return
+        }
+        const milestones = await milestonesRes.json()
+        setExecutionMilestones(Array.isArray(milestones) ? milestones : [])
+      }
     }catch(err){
       console.error('trade detail error', err)
       if(tradeLoaded){
@@ -1841,6 +1858,7 @@ export default function App(){
       setContractRevisionsLoading(false)
       setChangeRequestsLoading(false)
       setContractExecutionLoading(false)
+      setExecutionMilestonesLoading(false)
     }
   }
 
@@ -1945,10 +1963,54 @@ export default function App(){
         throw new Error(payload.detail || 'Contract Execution 생성에 실패했습니다.')
       }
       setContractExecution(await res.json())
+      setExecutionMilestones([])
     }catch(err){
       setContractExecutionError(err?.message || 'Contract Execution 생성에 실패했습니다.')
     }finally{
       setContractExecutionLoading(false)
+    }
+  }
+
+  async function initializeExecutionMilestones(){
+    if(!contractExecution || executionMilestonesLoading) return
+    setExecutionMilestonesLoading(true)
+    setExecutionMilestonesError(null)
+    try{
+      const res = await authFetch(API + `/executions/${contractExecution.execution_id}/milestones`, {method:'POST'})
+      if(!res.ok){
+        const payload = await res.json().catch(()=>({detail:res.statusText}))
+        throw new Error(payload.detail || 'Execution Milestones 초기화에 실패했습니다.')
+      }
+      setExecutionMilestones(await res.json())
+    }catch(err){
+      setExecutionMilestonesError(err?.message || 'Execution Milestones 초기화에 실패했습니다.')
+    }finally{
+      setExecutionMilestonesLoading(false)
+    }
+  }
+
+  async function advanceExecutionMilestone(milestone){
+    if(!contractExecution || executionMilestonesLoading) return
+    const nextStatus = milestone.status === 'PENDING' ? 'READY' : 'COMPLETED'
+    setExecutionMilestonesLoading(true)
+    setExecutionMilestonesError(null)
+    try{
+      const res = await authFetch(
+        API + `/executions/${contractExecution.execution_id}/milestones/${milestone.milestone_id}`,
+        {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:nextStatus})},
+      )
+      if(!res.ok){
+        const payload = await res.json().catch(()=>({detail:res.statusText}))
+        throw new Error(payload.detail || 'Milestone 상태 변경에 실패했습니다.')
+      }
+      const updated = await res.json()
+      setExecutionMilestones(current => current.map(item => (
+        item.milestone_id === updated.milestone_id ? updated : item
+      )))
+    }catch(err){
+      setExecutionMilestonesError(err?.message || 'Milestone 상태 변경에 실패했습니다.')
+    }finally{
+      setExecutionMilestonesLoading(false)
     }
   }
 
@@ -3092,20 +3154,52 @@ export default function App(){
                               </div>
                             )}
                             {!contractExecutionLoading && contractExecution && (
-                              <dl className="contract-grid execution-detail">
-                                <div><dt>Status</dt><dd>{contractExecution.status}</dd></div>
-                                <div><dt>Execution ID</dt><dd>{contractExecution.execution_id}</dd></div>
-                                <div><dt>Execution Revision</dt><dd>#{contractExecution.revision_no}</dd></div>
-                                <div><dt>Contract No</dt><dd>{contractExecution.contract_revision.contract_no}</dd></div>
-                                <div><dt>Trade ID</dt><dd>{contractExecution.contract_revision.trade_id}</dd></div>
-                                <div><dt>Product ID</dt><dd>{contractExecution.contract_revision.product_id}</dd></div>
-                                <div><dt>Buyer ID</dt><dd>{contractExecution.contract_revision.buyer_id}</dd></div>
-                                <div><dt>Seller ID</dt><dd>{contractExecution.contract_revision.seller_id}</dd></div>
-                                <div><dt>Quantity</dt><dd>{contractExecution.contract_revision.quantity} {contractExecution.contract_revision.unit}</dd></div>
-                                <div><dt>Price</dt><dd>{formatPrice(contractExecution.contract_revision.price)}</dd></div>
-                                <div><dt>Total Value</dt><dd>{formatPrice(contractExecution.contract_revision.total_value)} {contractExecution.contract_revision.currency}</dd></div>
-                                <div><dt>Created At</dt><dd>{formatDateTime(contractExecution.created_at)}</dd></div>
-                              </dl>
+                              <>
+                                <dl className="contract-grid execution-detail">
+                                  <div><dt>Status</dt><dd>{contractExecution.status}</dd></div>
+                                  <div><dt>Execution ID</dt><dd>{contractExecution.execution_id}</dd></div>
+                                  <div><dt>Execution Revision</dt><dd>#{contractExecution.revision_no}</dd></div>
+                                  <div><dt>Contract No</dt><dd>{contractExecution.contract_revision.contract_no}</dd></div>
+                                  <div><dt>Trade ID</dt><dd>{contractExecution.contract_revision.trade_id}</dd></div>
+                                  <div><dt>Product ID</dt><dd>{contractExecution.contract_revision.product_id}</dd></div>
+                                  <div><dt>Buyer ID</dt><dd>{contractExecution.contract_revision.buyer_id}</dd></div>
+                                  <div><dt>Seller ID</dt><dd>{contractExecution.contract_revision.seller_id}</dd></div>
+                                  <div><dt>Quantity</dt><dd>{contractExecution.contract_revision.quantity} {contractExecution.contract_revision.unit}</dd></div>
+                                  <div><dt>Price</dt><dd>{formatPrice(contractExecution.contract_revision.price)}</dd></div>
+                                  <div><dt>Total Value</dt><dd>{formatPrice(contractExecution.contract_revision.total_value)} {contractExecution.contract_revision.currency}</dd></div>
+                                  <div><dt>Created At</dt><dd>{formatDateTime(contractExecution.created_at)}</dd></div>
+                                </dl>
+                                <div className="execution-milestones">
+                                  <h5>Execution Milestones</h5>
+                                  {executionMilestonesLoading && <div className="info">Loading execution milestones...</div>}
+                                  {!executionMilestonesLoading && executionMilestonesError && <div className="error-msg">{executionMilestonesError}</div>}
+                                  {!executionMilestonesLoading && executionMilestones.length === 0 && (
+                                    <div className="execution-empty">
+                                      <span>Milestones: Not Initialized</span>
+                                      {contractApprovalSide && <button onClick={initializeExecutionMilestones}>Initialize Milestones</button>}
+                                    </div>
+                                  )}
+                                  {!executionMilestonesLoading && executionMilestones.length > 0 && (
+                                    <div className="table-wrap">
+                                      <table className="milestone-table">
+                                        <thead><tr><th>Milestone</th><th>Status</th><th>Created At</th><th>Completed At</th><th>Note</th><th>Action</th></tr></thead>
+                                        <tbody>
+                                          {executionMilestones.map(milestone => (
+                                            <tr key={milestone.milestone_id}>
+                                              <td>{milestone.milestone_code.split('_').map(word => word[0] + word.slice(1).toLowerCase()).join(' ')}</td>
+                                              <td>{milestone.status}</td>
+                                              <td>{formatDateTime(milestone.created_at)}</td>
+                                              <td>{milestone.completed_at ? formatDateTime(milestone.completed_at) : '-'}</td>
+                                              <td>{milestone.note || '-'}</td>
+                                              <td>{contractApprovalSide && milestone.status !== 'COMPLETED' ? <button onClick={()=>advanceExecutionMilestone(milestone)}>{milestone.status === 'PENDING' ? 'Mark Ready' : 'Mark Completed'}</button> : '-'}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              </>
                             )}
                           </section>
                         </div>

@@ -4,7 +4,7 @@ from sqlalchemy import func, or_
 
 from sqlalchemy.orm import Session, joinedload
 
-from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractExecution, ContractRevision, Deal, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
+from .models import AuthSession, Company, CompanyMember, Contract, ContractChangeRequest, ContractChangeRequestApproval, ContractExecution, ContractRevision, Deal, ExecutionMilestone, Inventory, InvestorProfile, Item, MemberProfile, MetalGradeMaster, MetalMaster, Order, Product, Trade, User, Warehouse
 from .password_security import verify_password
 from .schemas import ItemCreate, ProductCreate, UserCreate, OrderCreate, DealCreate
 
@@ -447,6 +447,78 @@ def create_contract_execution(db: Session, contract_id: int, contract_revision_i
     db.add(execution)
     db.flush()
     return execution
+
+
+DEFAULT_EXECUTION_MILESTONES = (
+    ("CONTRACT_READY", "READY"),
+    ("PAYMENT_READY", "PENDING"),
+    ("WAREHOUSE_READY", "PENDING"),
+    ("DELIVERY_READY", "PENDING"),
+    ("DELIVERY_COMPLETED", "PENDING"),
+    ("SETTLEMENT_READY", "PENDING"),
+    ("COMPLETED", "PENDING"),
+)
+
+
+def get_execution(db: Session, execution_id: int):
+    return db.query(ContractExecution).filter(ContractExecution.id == execution_id).first()
+
+
+def get_execution_milestones(db: Session, execution_id: int):
+    return (
+        db.query(ExecutionMilestone)
+        .filter(ExecutionMilestone.execution_id == execution_id)
+        .order_by(ExecutionMilestone.id.asc())
+        .all()
+    )
+
+
+def get_execution_milestone(db: Session, execution_id: int, milestone_id: int):
+    return (
+        db.query(ExecutionMilestone)
+        .filter(
+            ExecutionMilestone.execution_id == execution_id,
+            ExecutionMilestone.id == milestone_id,
+        )
+        .first()
+    )
+
+
+def create_default_execution_milestones(db: Session, execution_id: int):
+    milestones = [
+        ExecutionMilestone(
+            execution_id=execution_id,
+            milestone_code=milestone_code,
+            status=status,
+        )
+        for milestone_code, status in DEFAULT_EXECUTION_MILESTONES
+    ]
+    db.add_all(milestones)
+    db.flush()
+    return milestones
+
+
+def create_execution_milestone(db: Session, execution_id: int, milestone_code: str, status: str, note: str | None):
+    milestone = ExecutionMilestone(
+        execution_id=execution_id,
+        milestone_code=milestone_code,
+        status=status,
+        note=note,
+    )
+    db.add(milestone)
+    db.flush()
+    return milestone
+
+
+def update_execution_milestone(db: Session, milestone: ExecutionMilestone, status: str, note: str | None):
+    allowed_transitions = {"PENDING": "READY", "READY": "COMPLETED"}
+    if allowed_transitions.get(milestone.status) != status:
+        raise ValueError(f"Invalid milestone transition: {milestone.status} -> {status}")
+    milestone.status = status
+    milestone.note = note
+    milestone.completed_at = datetime.now(timezone.utc) if status == "COMPLETED" else None
+    db.flush()
+    return milestone
 
 
 def get_warehouse_inventory(db: Session, warehouse_id: int):

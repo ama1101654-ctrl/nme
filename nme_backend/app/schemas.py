@@ -485,6 +485,66 @@ class ContractExecutionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExecutionMilestoneUpdate(BaseModel):
+    status: Literal["READY", "COMPLETED"]
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value):
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+
+class ExecutionMilestoneCreate(BaseModel):
+    milestone_code: Literal[
+        "CONTRACT_READY",
+        "PAYMENT_READY",
+        "WAREHOUSE_READY",
+        "DELIVERY_READY",
+        "DELIVERY_COMPLETED",
+        "SETTLEMENT_READY",
+        "COMPLETED",
+    ]
+    status: Literal["PENDING", "READY"] = "PENDING"
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value):
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+
+class ExecutionMilestoneResponse(BaseModel):
+    milestone_id: int = Field(validation_alias="id")
+    execution_id: int
+    milestone_code: Literal[
+        "CONTRACT_READY",
+        "PAYMENT_READY",
+        "WAREHOUSE_READY",
+        "DELIVERY_READY",
+        "DELIVERY_COMPLETED",
+        "SETTLEMENT_READY",
+        "COMPLETED",
+    ]
+    status: Literal["PENDING", "READY", "COMPLETED"]
+    note: str | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TradeResponse(BaseModel):
     trade_id: int
     product_id: int

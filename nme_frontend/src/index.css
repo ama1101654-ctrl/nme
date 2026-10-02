@@ -173,6 +173,10 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 .change-request-reject-form textarea{width:100%;min-height:84px;resize:vertical;padding:9px;border:1px solid #d8b48d;border-radius:6px;font:inherit}
 .execution-empty{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;background:#fff;border-left:3px solid #8fb8ff;color:#45648a}
 .execution-detail{padding:12px;border-left:3px solid #2f855a;background:#fff}
+.execution-milestones{margin-top:16px}
+.milestone-table{width:100%;border-collapse:collapse;min-width:760px}
+.milestone-table th,.milestone-table td{padding:9px 10px;border-bottom:1px solid #d8e1ec;text-align:left;font-size:13px}
+.milestone-table th{color:#45648a;background:#f4f7fb}
 .todo-box{background:#eaf2ff;border-color:#cfe1ff}
 .todo-box.tone-required{background:#e7f2ff;border-color:#9fc3ff}
 .todo-box.tone-waiting{background:#eef4ff;border-color:#d3e2ff}

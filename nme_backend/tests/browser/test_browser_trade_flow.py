@@ -468,6 +468,18 @@ def test_browser_contract_detail_from_trade_history(page, browser_frontend_url, 
     expect(execution_detail).to_contain_text('Execution Revision#2')
     expect(execution_detail).to_contain_text(contract_no)
     expect(seller_page.get_by_role('button', name='Create Execution')).to_have_count(0)
+    expect(seller_page.get_by_role('heading', name='Execution Milestones')).to_be_visible()
+    expect(seller_page.get_by_text('Milestones: Not Initialized')).to_be_visible()
+    seller_page.get_by_role('button', name='Initialize Milestones').click()
+    milestone_rows = seller_page.locator('.milestone-table tbody tr')
+    expect(milestone_rows).to_have_count(7)
+    expect(milestone_rows.nth(0)).to_contain_text('Contract Ready')
+    expect(milestone_rows.nth(0)).to_contain_text('READY')
+    expect(milestone_rows.nth(1)).to_contain_text('Payment Ready')
+    expect(milestone_rows.nth(1)).to_contain_text('PENDING')
+    milestone_rows.nth(1).get_by_role('button', name='Mark Ready').click()
+    expect(milestone_rows.nth(1)).to_contain_text('READY')
+    expect(milestone_rows.nth(1).get_by_role('button', name='Mark Completed')).to_be_visible()
     seller_page.close()
 
 
