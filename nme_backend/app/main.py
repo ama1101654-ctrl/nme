@@ -2440,10 +2440,9 @@ def match_order(
                 'price': trade_price,
             })
             db.flush()
+            trades[-1]['trade_id'] = trade.id
 
         db.commit()
-        for idx, trade_payload in enumerate(trades):
-            trade_payload['trade_id'] = idx + 1
 
         return {
             'order_id': order.id,

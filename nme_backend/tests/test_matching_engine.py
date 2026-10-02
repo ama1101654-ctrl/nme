@@ -21,6 +21,84 @@ def create_order(client, token, payload):
     return client.post('/orders', json=payload, headers=headers)
 
 
+def test_matching_returns_persisted_trade_id_with_existing_trade(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    product_id = seeded_ids['product_id']
+
+    with SessionLocal() as db:
+        existing_buy = Order(
+            product_id=product_id,
+            buyer_id=seeded_ids['buyer_id'],
+            quantity=1,
+            remaining_quantity=0,
+            price=2400,
+            side='buy',
+            status='FILLED',
+        )
+        existing_sell = Order(
+            product_id=product_id,
+            seller_id=seeded_ids['seller_id'],
+            quantity=1,
+            remaining_quantity=0,
+            price=2400,
+            side='sell',
+            status='FILLED',
+        )
+        db.add_all([existing_buy, existing_sell])
+        db.flush()
+        existing_trade = Trade(
+            product_id=product_id,
+            buy_order_id=existing_buy.id,
+            sell_order_id=existing_sell.id,
+            quantity=1,
+            price=2400,
+        )
+        db.add(existing_trade)
+        db.commit()
+        existing_trade_id = existing_trade.id
+
+    sell_response = create_order(
+        client,
+        seller['access_token'],
+        {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 10, 'price': 2500, 'side': 'sell'},
+    )
+    buy_response = create_order(
+        client,
+        buyer['access_token'],
+        {'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 10, 'price': 2600, 'side': 'buy'},
+    )
+    assert sell_response.status_code == 200 and buy_response.status_code == 200
+
+    match_response = client.post(
+        f"/orders/{buy_response.json()['id']}/match",
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert match_response.status_code == 200
+    body = match_response.json()
+    assert body['trade_count'] == 1
+
+    with SessionLocal() as db:
+        matched_trade = db.query(Trade).filter(
+            Trade.buy_order_id == buy_response.json()['id'],
+            Trade.sell_order_id == sell_response.json()['id'],
+        ).one()
+        assert matched_trade.id != existing_trade_id
+        assert body['trades'][0]['trade_id'] == matched_trade.id
+
+    trade_id = body['trades'][0]['trade_id']
+    detail_response = client.get(f'/trades/{trade_id}')
+    assert detail_response.status_code == 200
+    assert detail_response.json()['trade_id'] == trade_id
+
+    contract_response = client.post(
+        f'/trades/{trade_id}/contract',
+        headers={'Authorization': f"Bearer {buyer['access_token']}"},
+    )
+    assert contract_response.status_code == 200
+    assert contract_response.json()['trade_id'] == trade_id
+
+
 def test_basic_buy_sell_match(client, seeded_ids):
     buyer = login(client, 'bob@example.com')
     seller = login(client, 'charlie@example.com')
@@ -60,6 +138,7 @@ def test_basic_buy_sell_match(client, seeded_ids):
         assert trade.quantity == 40
         assert trade.product_id == product_id
         assert product.quantity == 100
+        assert body['trades'][0]['trade_id'] == trade.id
 
 
 def test_no_price_match(client, seeded_ids):
@@ -121,7 +200,8 @@ def test_partial_fill_and_remaining_quantity(client, seeded_ids):
         assert buy_order is not None and sell_order is not None
         assert buy_order.remaining_quantity == 60
         assert sell_order.remaining_quantity == 0
-        assert db.query(Trade).count() == 1
+        trade = db.query(Trade).one()
+        assert body['trades'][0]['trade_id'] == trade.id
 
 
 def test_self_trade_prevented(client, seeded_ids):
@@ -197,6 +277,52 @@ def test_fifo_priority_and_multi_trade(client, seeded_ids):
         assert buy_order is not None and buy_order.remaining_quantity == 0
         assert len(trades) == 3
         assert [trade.sell_order_id for trade in trades] == [sell_b.json()['id'], sell_a.json()['id'], sell_c.json()['id']]
+        for trade_payload in body['trades']:
+            trade = db.query(Trade).filter(Trade.id == trade_payload['trade_id']).one()
+            assert trade.buy_order_id == trade_payload['buy_order_id']
+            assert trade.sell_order_id == trade_payload['sell_order_id']
+            assert trade.quantity == trade_payload['quantity']
+            assert trade.price == trade_payload['price']
+
+
+def test_repeated_matching_returns_distinct_persisted_trade_ids(client, seeded_ids):
+    buyer = login(client, 'bob@example.com')
+    seller = login(client, 'charlie@example.com')
+    product_id = seeded_ids['product_id']
+
+    buy = create_order(
+        client,
+        buyer['access_token'],
+        {'product_id': product_id, 'buyer_id': seeded_ids['buyer_id'], 'quantity': 20, 'price': 2600, 'side': 'buy'},
+    )
+    assert buy.status_code == 200
+
+    returned_trade_ids = []
+    sell_order_ids = []
+    for price in (2500, 2400):
+        sell = create_order(
+            client,
+            seller['access_token'],
+            {'product_id': product_id, 'seller_id': seeded_ids['seller_id'], 'quantity': 10, 'price': price, 'side': 'sell'},
+        )
+        assert sell.status_code == 200
+        sell_order_ids.append(sell.json()['id'])
+
+        response = client.post(
+            f"/orders/{buy.json()['id']}/match",
+            headers={'Authorization': f"Bearer {buyer['access_token']}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body['trade_count'] == 1
+        returned_trade_ids.append(body['trades'][0]['trade_id'])
+
+    assert len(set(returned_trade_ids)) == 2
+    with SessionLocal() as db:
+        for trade_id, sell_order_id in zip(returned_trade_ids, sell_order_ids):
+            trade = db.query(Trade).filter(Trade.id == trade_id).one()
+            assert trade.buy_order_id == buy.json()['id']
+            assert trade.sell_order_id == sell_order_id
 
 
 def test_same_price_fifo_uses_order_id_as_tiebreaker(client, seeded_ids):
